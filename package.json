@@ -1,0 +1,9 @@
+{
+  "name": "unimatch-root",
+  "version": "1.0.0",
+  "description": "Root shim so hosts that build from the repo root run the server in ./server",
+  "scripts": {
+    "postinstall": "cd server && npm install",
+    "start": "cd server && npm start"
+  }
+}

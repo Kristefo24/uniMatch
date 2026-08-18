@@ -1,0 +1,368 @@
+// MySQL storage driver (XAMPP / local MySQL). Same interface as json-driver.
+// Requires: npm install mysql2   and a `unimatch` database created from schema.sql.
+const path = require('path');
+const fs = require('fs');
+const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, STUDENTS } = require('../seed');
+
+let pool;
+
+async function getPool() {
+  if (pool) return pool;
+  let mysql;
+  try { mysql = require('mysql2/promise'); }
+  catch { throw new Error('mysql2 not installed. Run: npm install mysql2'); }
+  pool = mysql.createPool({
+    host: process.env.MYSQL_HOST || '127.0.0.1',
+    port: Number(process.env.MYSQL_PORT || 3306),
+    user: process.env.MYSQL_USER || 'root',
+    password: process.env.MYSQL_PASSWORD || '',
+    database: process.env.MYSQL_DATABASE || 'unimatch',
+    waitForConnections: true,
+    connectionLimit: 10,
+  });
+  return pool;
+}
+
+const uid = (p) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+async function seedIfEmpty() {
+  const p = await getPool();
+  const [rows] = await p.query('SELECT COUNT(*) AS n FROM universities');
+  if (rows[0].n > 0) return;
+  // admin
+  await p.query('INSERT INTO users (id,name,email,password,role) VALUES (?,?,?,?,?)',
+    ['user-admin', DEFAULT_ADMIN.name, DEFAULT_ADMIN.email, DEFAULT_ADMIN.password, DEFAULT_ADMIN.role]);
+  // seeded students
+  for (const s of (STUDENTS || [])) {
+    await p.query('INSERT INTO users (id,name,email,password,role,home) VALUES (?,?,?,?,?,?)',
+      [s.id, s.name, s.email, '123', 'student', s.home]);
+  }
+  // evaluation criteria
+  for (const c of (CRITERIA || [])) {
+    await p.query('INSERT INTO criteria (code,label,category,direction) VALUES (?,?,?,?)',
+      [c.code, c.label, c.category, c.direction]);
+  }
+  // universities + campuses + criteria_values
+  for (const u of UNIVERSITIES) {
+    await p.query('INSERT INTO universities (id,abbr,name) VALUES (?,?,?)', [u.id, u.abbr, u.name]);
+    for (const c of u.campuses) {
+      const cid = uid('camp');
+      await p.query('INSERT INTO campuses (id,university_id,name) VALUES (?,?,?)', [cid, u.id, c.name]);
+      for (const d of c.depts) {
+        await p.query('INSERT INTO campus_departments (campus_id,department) VALUES (?,?)', [cid, d]);
+      }
+    }
+    for (const [code, value] of Object.entries(u.vals)) {
+      await p.query('INSERT INTO criteria_values (university_id,code,value) VALUES (?,?,?)', [u.id, code, value]);
+    }
+  }
+  for (const pr of buildProgrammes()) {
+    await p.query('INSERT INTO programmes (id,name,dept,university_id) VALUES (?,?,?,?)',
+      [pr.id, pr.name, pr.dept, pr.universityId]);
+  }
+  for (const r of STAFF_REQUESTS) {
+    await p.query('INSERT INTO staff_requests (id,name,email,university_id,status) VALUES (?,?,?,?,?)',
+      [r.id, r.name, r.email, r.universityId, r.status]);
+  }
+}
+
+async function hydrateUniversity(u) {
+  const p = await getPool();
+  const [camps] = await p.query('SELECT id,name FROM campuses WHERE university_id=?', [u.id]);
+  for (const c of camps) {
+    const [ds] = await p.query('SELECT department FROM campus_departments WHERE campus_id=?', [c.id]);
+    c.depts = ds.map(x => x.department);
+  }
+  const [vals] = await p.query('SELECT code,value FROM criteria_values WHERE university_id=?', [u.id]);
+  const map = {};
+  vals.forEach(v => { map[v.code] = Number(v.value); });
+  const [[rt]] = await p.query('SELECT AVG(stars) AS avg, COUNT(*) AS n FROM ratings WHERE university_id=?', [u.id]);
+  const [sdRows] = await p.query('SELECT data FROM staff_data WHERE university_id=?', [u.id]);
+  let sd = { combos: {}, criteria: {} };
+  if (sdRows.length) { try { sd = JSON.parse(sdRows[0].data); } catch { /* fallthrough */ } }
+  return {
+    id: u.id, abbr: u.abbr, name: u.name, campuses: camps, vals: map,
+    avgRating: rt.avg != null ? Number(Number(rt.avg).toFixed(2)) : null,
+    ratingCount: rt.n || 0,
+    combos: sd.combos || {},
+    religiousBased: !!(sd.criteria && sd.criteria.religiousBased),
+    religion: (sd.criteria && sd.criteria.religion) || null,
+  };
+}
+
+module.exports = {
+  async init() {
+    // Auto-apply schema so `npm start` works after just creating the empty DB.
+    const p = await getPool();
+    const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+    for (const stmt of schema.split(';').map(s => s.trim()).filter(Boolean)) {
+      await p.query(stmt);
+    }
+    await seedIfEmpty();
+  },
+
+  async createUser({ name, email, password, role, universityId }) {
+    const p = await getPool();
+    const [ex] = await p.query('SELECT id FROM users WHERE email=?', [email]);
+    if (ex.length) throw new Error('An account with this email already exists');
+    const id = uid('user');
+    await p.query('INSERT INTO users (id,name,email,password,role,university_id) VALUES (?,?,?,?,?,?)',
+      [id, name, email, password, role, universityId || null]);
+    if (role === 'staff') {
+      await p.query('INSERT INTO staff_requests (id,name,email,university_id,status) VALUES (?,?,?,?,?)',
+        [uid('req'), name, email, universityId || null, 'pending']);
+    }
+    return { id, name, email, role, universityId: universityId || null };
+  },
+
+  async findUserByEmail(email) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT * FROM users WHERE email=?', [email]);
+    const u = rows[0];
+    if (u) { u.suspended = !!u.suspended; u.universityId = u.university_id; }
+    return u || null;
+  },
+
+  async listUniversities() {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT * FROM universities');
+    return Promise.all(rows.map(hydrateUniversity));
+  },
+  async getUniversity(id) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT * FROM universities WHERE id=?', [id]);
+    return rows[0] ? hydrateUniversity(rows[0]) : null;
+  },
+
+  async listProgrammes(dept) {
+    const p = await getPool();
+    const [rows] = dept
+      ? await p.query('SELECT * FROM programmes WHERE dept=?', [dept])
+      : await p.query('SELECT * FROM programmes');
+    return rows;
+  },
+
+  async listStaffRequests() {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT * FROM staff_requests');
+    return rows;
+  },
+  async confirmStaffRequest(id) {
+    const p = await getPool();
+    await p.query('UPDATE staff_requests SET status="confirmed" WHERE id=?', [id]);
+    const [rows] = await p.query('SELECT * FROM staff_requests WHERE id=?', [id]);
+    return rows[0];
+  },
+  async setStaffRequestStatus(id, status) {
+    const p = await getPool();
+    await p.query('UPDATE staff_requests SET status=? WHERE id=?', [status, id]);
+    const [rows] = await p.query('SELECT * FROM staff_requests WHERE id=?', [id]);
+    const r = rows[0];
+    if (r) await p.query('UPDATE users SET suspended=? WHERE email=?', [status === 'suspended' ? 1 : 0, r.email]);
+    return r;
+  },
+  async deleteStaffRequest(id) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT * FROM staff_requests WHERE id=?', [id]);
+    const r = rows[0];
+    await p.query('DELETE FROM staff_requests WHERE id=?', [id]);
+    if (r) await p.query('DELETE FROM users WHERE email=? AND role="staff"', [r.email]);
+    return { ok: true };
+  },
+
+  // ---- admin: universities CRUD ----
+  async addUniversity({ abbr, name, sector }) {
+    const p = await getPool();
+    const id = uid('uni');
+    await p.query('INSERT INTO universities (id,abbr,name) VALUES (?,?,?)', [id, abbr, name]);
+    const cid = uid('camp');
+    await p.query('INSERT INTO campuses (id,university_id,name) VALUES (?,?,?)', [cid, id, sector || 'Gasabo Campus']);
+    return { id, abbr, name, sector };
+  },
+  async updateUniversity(id, { abbr, name, sector }) {
+    const p = await getPool();
+    if (abbr != null || name != null) {
+      await p.query('UPDATE universities SET abbr=COALESCE(?,abbr), name=COALESCE(?,name) WHERE id=?', [abbr, name, id]);
+    }
+    if (sector != null) {
+      const [camps] = await p.query('SELECT id FROM campuses WHERE university_id=? LIMIT 1', [id]);
+      if (camps.length) await p.query('UPDATE campuses SET name=? WHERE id=?', [sector, camps[0].id]);
+      else await p.query('INSERT INTO campuses (id,university_id,name) VALUES (?,?,?)', [uid('camp'), id, sector]);
+    }
+    return { id, abbr, name, sector };
+  },
+  async deleteUniversity(id) {
+    const p = await getPool();
+    await p.query('DELETE FROM universities WHERE id=?', [id]);
+    await p.query('DELETE FROM campuses WHERE university_id=?', [id]);
+    await p.query('DELETE FROM criteria_values WHERE university_id=?', [id]);
+    return { ok: true };
+  },
+
+  // ---- admin: criteria CRUD ----
+  async listCriteria() {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT code,label,category,direction FROM criteria ORDER BY code');
+    return rows;
+  },
+  async addCriterion({ label, category, direction }) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT code FROM criteria');
+    const nums = rows.map(r => parseInt((r.code || '').replace(/\D/g, '')) || 0);
+    const code = 'C' + String(Math.max(0, ...nums) + 1).padStart(2, '0');
+    await p.query('INSERT INTO criteria (code,label,category,direction) VALUES (?,?,?,?)',
+      [code, label, category || 'General', direction || 'benefit']);
+    return { code, label, category, direction };
+  },
+  async updateCriterion(code, { label, category, direction }) {
+    const p = await getPool();
+    await p.query('UPDATE criteria SET label=COALESCE(?,label), category=COALESCE(?,category), direction=COALESCE(?,direction) WHERE code=?',
+      [label, category, direction, code]);
+    return { code, label, category, direction };
+  },
+  async deleteCriterion(code) {
+    const p = await getPool();
+    await p.query('DELETE FROM criteria WHERE code=?', [code]);
+    return { ok: true };
+  },
+
+  // ---- admin: students ----
+  async listStudents() {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT id,name,email,home,suspended FROM users WHERE role="student"');
+    return rows.map(u => ({ id: u.id, name: u.name, email: u.email, home: u.home || '', suspended: !!u.suspended }));
+  },
+  async setStudentSuspended(id, suspended) {
+    const p = await getPool();
+    await p.query('UPDATE users SET suspended=? WHERE id=?', [suspended ? 1 : 0, id]);
+    return { id, suspended: !!suspended };
+  },
+
+  // ---- staff: own university data ----
+  async _staffData(uniId) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT data FROM staff_data WHERE university_id=?', [uniId]);
+    if (rows.length) { try { return JSON.parse(rows[0].data); } catch { /* fallthrough */ } }
+    return { campuses: [], combos: {}, criteria: {} };
+  },
+  async _saveStaffData(uniId, data) {
+    const p = await getPool();
+    await p.query(
+      'INSERT INTO staff_data (university_id,data) VALUES (?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)',
+      [uniId, JSON.stringify(data)]);
+  },
+  async getStaffData(uniId) { return this._staffData(uniId); },
+  async saveStaffCampuses(uniId, campuses) {
+    const p = await getPool();
+    const d = await this._staffData(uniId); d.campuses = campuses;
+    await this._saveStaffData(uniId, d);
+    // sync public campuses
+    await p.query('DELETE FROM campuses WHERE university_id=?', [uniId]);
+    for (const c of campuses) {
+      const cid = uid('camp');
+      await p.query('INSERT INTO campuses (id,university_id,name) VALUES (?,?,?)', [cid, uniId, c.name]);
+      for (const dep of (c.depts || [])) {
+        await p.query('INSERT INTO campus_departments (campus_id,department) VALUES (?,?)', [cid, dep]);
+      }
+    }
+    return d;
+  },
+  async saveStaffCombos(uniId, combos) {
+    const d = await this._staffData(uniId); d.combos = combos;
+    await this._saveStaffData(uniId, d); return d;
+  },
+  async saveStaffCriteria(uniId, criteria) {
+    const p = await getPool();
+    const d = await this._staffData(uniId); d.criteria = criteria;
+    await this._saveStaffData(uniId, d);
+    for (const [code, value] of Object.entries(criteria)) {
+      if (typeof value !== 'number' || !/^C\d+$/.test(code)) continue;
+      await p.query(
+        'INSERT INTO criteria_values (university_id,code,value) VALUES (?,?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)',
+        [uniId, code, value]);
+    }
+    return d;
+  },
+  async staffReport(uniId) {
+    const p = await getPool();
+    const [apps] = await p.query(
+      'SELECT a.home_area, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id WHERE a.university_id=?', [uniId]);
+    const [[sl]] = await p.query('SELECT COUNT(*) AS n FROM shortlists WHERE university_id=?', [uniId]);
+    return {
+      appearedCount: (sl.n || 0) + apps.length,
+      applyCount: apps.length,
+      applicants: apps.map(a => ({ name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '' })),
+    };
+  },
+  async adminReport() {
+    const p = await getPool();
+    const [unis] = await p.query('SELECT id,abbr,name FROM universities');
+    const [applyRows] = await p.query('SELECT university_id, COUNT(*) AS n FROM applications GROUP BY university_id');
+    const [slRows] = await p.query('SELECT university_id, COUNT(*) AS n FROM shortlists GROUP BY university_id');
+    const applyBy = Object.fromEntries(applyRows.map(r => [r.university_id, r.n]));
+    const slBy = Object.fromEntries(slRows.map(r => [r.university_id, r.n]));
+    const [apps] = await p.query(
+      'SELECT a.home_area, a.university_id, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id');
+    const [students] = await p.query('SELECT name,email,home,suspended FROM users WHERE role="student"');
+    const [staff] = await p.query('SELECT name,email,status FROM staff_requests');
+    const [[rt]] = await p.query('SELECT AVG(stars) AS avg FROM ratings');
+    const uName = Object.fromEntries(unis.map(u => [u.id, u.name]));
+    return {
+      universities: unis.map(u => ({ abbr: u.abbr, name: u.name, applications: applyBy[u.id] || 0, shortlists: slBy[u.id] || 0 })),
+      applications: apps.map(a => ({ student: a.name || 'A2 graduate', email: a.email || '', university: uName[a.university_id] || a.university_id, home: a.home_area || '', date: '' })),
+      students: students.map(s => ({ name: s.name, email: s.email, home: s.home || '', suspended: !!s.suspended })),
+      staff: staff.map(s => ({ name: s.name, email: s.email, status: s.status })),
+      avgRating: rt.avg != null ? Number(Number(rt.avg).toFixed(2)) : null,
+    };
+  },
+
+  async recordApplication({ userId, universityId, programmeId, homeArea }) {
+    const p = await getPool();
+    const id = uid('app');
+    await p.query('INSERT INTO applications (id,user_id,university_id,programme_id,home_area) VALUES (?,?,?,?,?)',
+      [id, userId, universityId, programmeId, homeArea]);
+    return { id };
+  },
+  async recordShortlist({ userId, universityId }) {
+    const p = await getPool();
+    await p.query('INSERT IGNORE INTO shortlists (id,user_id,university_id) VALUES (?,?,?)',
+      [uid('sl'), userId, universityId]);
+    return { ok: true };
+  },
+  async listShortlist(userId) {
+    const p = await getPool();
+    const [rows] = await p.query(
+      'SELECT u.id,u.abbr,u.name FROM shortlists s JOIN universities u ON u.id=s.university_id WHERE s.user_id=?',
+      [userId]);
+    return rows;
+  },
+  async removeShortlist(userId, universityId) {
+    const p = await getPool();
+    await p.query('DELETE FROM shortlists WHERE user_id=? AND university_id=?', [userId, universityId]);
+    return { ok: true };
+  },
+  async recordRating({ userId, universityId, stars }) {
+    const p = await getPool();
+    await p.query(
+      'INSERT INTO ratings (id,user_id,university_id,stars) VALUES (?,?,?,?) ' +
+      'ON DUPLICATE KEY UPDATE stars=VALUES(stars)',
+      [uid('rt'), userId, universityId, stars]);
+    return { ok: true };
+  },
+
+  async recordCriteriaSelections(userId, codes) {
+    const p = await getPool();
+    for (const code of codes) {
+      await p.query('INSERT INTO criteria_selections (id,user_id,code,created_at) VALUES (?,?,?,?)',
+        [uid('csel'), userId || null, code, new Date().toISOString()]);
+    }
+    return { ok: true };
+  },
+  async criteriaUsageCounts() {
+    const p = await getPool();
+    const [rows] = await p.query(
+      'SELECT cs.code, c.label, COUNT(*) AS count FROM criteria_selections cs ' +
+      'LEFT JOIN criteria c ON c.code = cs.code GROUP BY cs.code, c.label ORDER BY count DESC');
+    return rows.map(r => ({ code: r.code, label: r.label || r.code, count: r.count }));
+  },
+};
