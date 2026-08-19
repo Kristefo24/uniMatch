@@ -10,8 +10,17 @@ CREATE TABLE IF NOT EXISTS users (
   role           VARCHAR(20)  NOT NULL DEFAULT 'student',
   university_id  VARCHAR(64),
   home           VARCHAR(160),
-  suspended      INT NOT NULL DEFAULT 0
+  suspended      INT NOT NULL DEFAULT 0,
+  track          VARCHAR(20),
+  photo          TEXT,
+  reset_otp          VARCHAR(6),
+  reset_otp_expires  VARCHAR(40)
 );
+-- Re-run on every boot so an already-live database picks up the columns too.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS track VARCHAR(20);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS photo TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp VARCHAR(6);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_expires VARCHAR(40);
 
 -- Evaluation criteria the admin manages. direction: 'cost' | 'benefit'.
 CREATE TABLE IF NOT EXISTS criteria (
@@ -30,8 +39,10 @@ CREATE TABLE IF NOT EXISTS staff_data (
 CREATE TABLE IF NOT EXISTS universities (
   id    VARCHAR(64) PRIMARY KEY,
   abbr  VARCHAR(40) NOT NULL,
-  name  VARCHAR(200) NOT NULL
+  name  VARCHAR(200) NOT NULL,
+  photo TEXT
 );
+ALTER TABLE universities ADD COLUMN IF NOT EXISTS photo TEXT;
 
 CREATE TABLE IF NOT EXISTS campuses (
   id             VARCHAR(64) PRIMARY KEY,

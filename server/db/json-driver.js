@@ -29,6 +29,7 @@ function save() {
   fs.writeFileSync(FILE, JSON.stringify(db, null, 2));
 }
 const uid = (p) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
 function ratingSummary(uniId) {
   const rows = db.ratings.filter(r => r.universityId === uniId);
@@ -43,17 +44,20 @@ function staffExtras(uniId) {
     combos: (sd && sd.combos) || {},
     religiousBased: !!c.religiousBased,
     religion: c.religion || null,
+    schoolLocation: c.schoolLocation || null,
+    busStops: Array.isArray(c.busStops) ? c.busStops : [],
+    motoStops: Array.isArray(c.motoStops) ? c.motoStops : [],
   };
 }
 
 module.exports = {
   async init() { load(); },
 
-  async createUser({ name, email, password, role, universityId }) {
+  async createUser({ name, email, password, role, universityId, track }) {
     if (db.users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
       throw new Error('An account with this email already exists');
     }
-    const user = { id: uid('user'), name, email, password, role, universityId: universityId || null };
+    const user = { id: uid('user'), name, email, password, role, universityId: universityId || null, track: track || null };
     db.users.push(user);
     if (role === 'staff') {
       db.staffRequests.push({ id: uid('req'), name, email, universityId: universityId || null, status: 'pending' });
@@ -73,7 +77,21 @@ module.exports = {
   },
 
   async listProgrammes(dept) {
-    return dept ? db.programmes.filter(p => p.dept === dept) : db.programmes;
+    const real = dept ? db.programmes.filter(p => p.dept === dept) : db.programmes;
+    const covered = new Set(real.map(p => `${p.universityId}::${p.dept}`));
+    const synthetic = [];
+    for (const u of db.universities) {
+      for (const c of (u.campuses || [])) {
+        for (const d of (c.depts || [])) {
+          if (dept && d !== dept) continue;
+          const key = `${u.id}::${d}`;
+          if (covered.has(key)) continue;
+          covered.add(key);
+          synthetic.push({ id: `dept-${u.id}-${slug(d)}`, name: d, dept: d, universityId: u.id, campus: c.name, years: null });
+        }
+      }
+    }
+    return [...real, ...synthetic];
   },
 
   async listStaffRequests() { return db.staffRequests; },
@@ -123,14 +141,30 @@ module.exports = {
     save();
     return db.staffData[uniId];
   },
+  async saveStaffProgrammes(uniId, programmes) {
+    db.staffData = db.staffData || {};
+    db.staffData[uniId] = { ...(db.staffData[uniId] || { campuses:[], combos:{}, criteria:{} }), programmes };
+    db.programmes = db.programmes.filter(p => p.universityId !== uniId);
+    for (const p of programmes) {
+      db.programmes.push({ id: uid('prog'), name: p.name, dept: p.dept, campus: p.campus || '', years: p.years || null, universityId: uniId });
+    }
+    save();
+    return db.staffData[uniId];
+  },
   async saveStaffCriteria(uniId, criteria) {
     db.staffData = db.staffData || {};
     db.staffData[uniId] = { ...(db.staffData[uniId] || { campuses:[], combos:{} }), criteria };
     const u = db.universities.find(x => x.id === uniId);
     if (u) {
+      u.vals = u.vals || {};
+      // Clear any Cxx code no longer present in the new payload (e.g. staff
+      // removed all bus/moto stops -> C09 must not linger with the old value).
+      for (const k of Object.keys(u.vals)) {
+        if (/^C\d+$/.test(k) && !Object.prototype.hasOwnProperty.call(criteria, k)) delete u.vals[k];
+      }
       const numeric = Object.fromEntries(
         Object.entries(criteria).filter(([k, v]) => typeof v === 'number' && /^C\d+$/.test(k)));
-      u.vals = { ...(u.vals || {}), ...numeric };
+      u.vals = { ...u.vals, ...numeric };
     }
     save();
     return db.staffData[uniId];
@@ -138,13 +172,19 @@ module.exports = {
   async staffReport(uniId) {
     const apps = db.applications.filter(a => a.universityId === uniId);
     const shortlists = db.shortlists.filter(s => s.universityId === uniId);
+    const applicants = apps.map(a => {
+      const u = db.users.find(x => x.id === a.userId);
+      return { name: u ? u.name : 'A2 graduate', email: u ? u.email : '', home: a.homeArea || (u && u.home) || '' };
+    });
+    const byHome = {};
+    applicants.forEach(a => { const h = a.home || 'Unknown'; byHome[h] = (byHome[h] || 0) + 1; });
     return {
       appearedCount: shortlists.length + apps.length,
+      shortlistCount: shortlists.length,
       applyCount: apps.length,
-      applicants: apps.map(a => {
-        const u = db.users.find(x => x.id === a.userId);
-        return { name: u ? u.name : 'A2 graduate', email: u ? u.email : '', home: a.homeArea || (u && u.home) || '' };
-      }),
+      applicants,
+      homeAreas: Object.entries(byHome).map(([home, count]) => ({ home, count })).sort((a, b) => b.count - a.count),
+      ...ratingSummary(uniId),
     };
   },
 
@@ -232,12 +272,13 @@ module.exports = {
       campuses: [{ name: sector || 'Gasabo Campus', depts: [] }], vals: {} };
     db.universities.push(u); save(); return u;
   },
-  async updateUniversity(id, { abbr, name, sector }) {
+  async updateUniversity(id, { abbr, name, sector, photo }) {
     const u = db.universities.find(x => x.id === id);
     if (!u) throw new Error('University not found');
     if (abbr != null) u.abbr = abbr;
     if (name != null) u.name = name;
     if (sector != null) { u.sector = sector; if (u.campuses[0]) u.campuses[0].name = sector; }
+    if (photo !== undefined) u.photo = photo;
     save(); return u;
   },
   async deleteUniversity(id) {
@@ -262,6 +303,36 @@ module.exports = {
   },
   async deleteCriterion(code) {
     db.criteria = db.criteria.filter(c => c.code !== code); save(); return { ok: true };
+  },
+
+  // ---- self-service profile update ----
+  async updateUser(id, { name, track, photo }) {
+    const u = db.users.find(x => x.id === id);
+    if (!u) throw new Error('User not found');
+    if (name != null) u.name = name;
+    if (track !== undefined) u.track = track;
+    if (photo !== undefined) u.photo = photo;
+    save();
+    return { id: u.id, name: u.name, track: u.track || null, photo: u.photo || null };
+  },
+
+  async setResetOtp(userId, otp, expiresAt) {
+    const u = db.users.find(x => x.id === userId);
+    if (!u) throw new Error('User not found');
+    u.resetOtp = otp;
+    u.resetOtpExpires = expiresAt;
+    save();
+    return { ok: true };
+  },
+  async resetPassword(email, otp, password) {
+    const u = db.users.find(x => x.email.toLowerCase() === (email || '').toLowerCase());
+    if (!u || !u.resetOtp || u.resetOtp !== otp) throw new Error('Invalid or expired code');
+    if (!u.resetOtpExpires || new Date(u.resetOtpExpires).getTime() < Date.now()) throw new Error('Invalid or expired code');
+    u.password = password;
+    u.resetOtp = null;
+    u.resetOtpExpires = null;
+    save();
+    return { ok: true };
   },
 
   // ---- admin: students (suspend / restore) ----

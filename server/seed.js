@@ -1,7 +1,8 @@
 // Seed data for UniMatch Gasabo. Ids match the Flutter client (kUniversityIds).
-// Criterion codes used by the ranking (see CRITERIA below): C01 tuition (cost),
-// C19 reputation (benefit), C07 distance (cost), C15 ICT infrastructure (benefit),
-// C13 career services (benefit).
+// Universities start with no criteria values (vals: {}) — every numeric
+// criterion (tuition, distance, career services, ICT infrastructure,
+// reputation, etc.) is entered by real staff via StaffCriteriaScreen,
+// never pre-filled with demo numbers.
 
 const DEFAULT_ADMIN = {
   name: 'Kris',
@@ -35,7 +36,7 @@ const UNIVERSITIES = [
       {name:'Early Childhood Development Education (ECD)', dept:'School of Education', campus:'Main Campus', years:4},
       {name:'Law (Hons)', dept:'School of Law', campus:'Main Campus', years:4},
     ],
-    vals:{ C01:800000, C19:3.8, C07:2.6, C15:4.0, C13:3.5 } },
+    vals:{} },
 
   { id:'uni-eau', abbr:'EAU', name:'East African University',
     campuses:[{name:'Kicukiro Campus', depts:['Film making & Film Production','Leisure, Tourism & Hotel Management','Mass Communication & Journalism']}],
@@ -52,7 +53,7 @@ const UNIVERSITIES = [
       {name:'Journalism Radio & Television Broadcasting', dept:'Mass Communication & Journalism', campus:'Kicukiro Campus', years:3},
       {name:'Public Relations', dept:'Mass Communication & Journalism', campus:'Kicukiro Campus', years:3},
     ],
-    vals:{ C01:650000, C19:3.3, C07:5.2, C15:3.4, C13:3.0 } },
+    vals:{} },
 
   { id:'uni-alu', abbr:'ALU', name:'African Leadership University',
     campuses:[{name:'Bumbogo Campus', depts:['Entrepreneurship & Leadership','Computing & IT','School of Business and Management']}],
@@ -64,7 +65,7 @@ const UNIVERSITIES = [
       {name:'International Business & Trade (IBT)', dept:'School of Business and Management', campus:'Bumbogo Campus', years:3},
       {name:'Strategic Management', dept:'School of Business and Management', campus:'Bumbogo Campus', years:3},
     ],
-    vals:{ C01:1100000, C19:4.6, C07:8.1, C15:4.7, C13:4.2 } },
+    vals:{} },
 
   { id:'uni-auca', abbr:'AUCA', name:'Adventist University of Central Africa',
     campuses:[
@@ -85,7 +86,7 @@ const UNIVERSITIES = [
       {name:'Theology', dept:'Faculty of Theology', campus:'Masoro Campus', years:3},
       {name:'Nursing and Midwifery', dept:'Nursing and Midwifery', campus:'Masoro Campus', years:5},
     ],
-    vals:{ C01:750000, C19:3.9, C07:5.4, C15:3.8, C13:4.0 } },
+    vals:{} },
 
   { id:'uni-urcmhs', abbr:'UR/CMHS', name:'UR College of Medicine & Health Sciences',
     campuses:[{name:'Remera Campus', depts:['School of Medicine & Pharmacy','School of Nursing & Midwifery','School of Public Health','School of Dentistry','School of Health Sciences']}],
@@ -102,7 +103,7 @@ const UNIVERSITIES = [
       {name:'Radiography', dept:'School of Health Sciences', campus:'Remera Campus', years:5},
       {name:'Nutrition', dept:'School of Health Sciences', campus:'Remera Campus', years:5},
     ],
-    vals:{ C01:900000, C19:4.6, C07:2.1, C15:4.6, C13:5.0 } },
+    vals:{} },
 
   { id:'uni-ulk', abbr:'ULK', name:'Kigali Independent University',
     campuses:[{name:'Gisozi Campus', depts:['School of Economics & Business Studies','School of Social Sciences','School of Law','School of Science & Technology']}],
@@ -123,7 +124,7 @@ const UNIVERSITIES = [
       {name:'Software Engineering (Hons)', dept:'School of Science & Technology', campus:'Gisozi Campus', years:4},
       {name:'Networking (Hons)', dept:'School of Science & Technology', campus:'Gisozi Campus', years:4},
     ],
-    vals:{ C01:620000, C19:3.5, C07:3.6, C15:3.0, C13:3.5 } },
+    vals:{} },
 
   { id:'uni-kepler', abbr:'Kepler', name:'Kepler College',
     campuses:[{name:'Kigali Heights Campus', depts:['Project Management','Business Analytics','Media and Communication']}],
@@ -132,7 +133,7 @@ const UNIVERSITIES = [
       {name:'Science in Business Analytics', dept:'Business Analytics', campus:'Kigali Heights Campus', years:3},
       {name:'Arts in Communications', dept:'Media and Communication', campus:'Kigali Heights Campus', years:3},
     ],
-    vals:{ C01:900000, C19:4.5, C07:4.2, C15:4.6, C13:4.0 } },
+    vals:{} },
 ];
 
 // Programmes across all universities (explicit, from each university's programmes list).
@@ -157,8 +158,11 @@ const STAFF_REQUESTS = [
 const CRITERIA = [
   { code:'C01', label:'Annual tuition fee', category:'Financial', direction:'cost' },
   { code:'C02', label:'Scholarship & financial aid', category:'Financial', direction:'benefit' },
-  { code:'C03', label:'Programme availability', category:'Academic Quality', direction:'benefit' },
-  { code:'C04', label:'Faculty qualifications', category:'Academic Quality', direction:'benefit' },
+  // C03 "Programme availability" and C04 "Faculty qualifications" are
+  // intentionally not offered as criteria — programme/department
+  // availability is already a hard eligibility filter in POST /rank
+  // (db.listProgrammes), so a separate scored criterion for it would be
+  // redundant and was never staff-set anyway.
   { code:'C05', label:'Average class size', category:'Academic Quality', direction:'cost' },
   { code:'C06', label:'Graduation / completion rate', category:'Academic Quality', direction:'benefit' },
   { code:'C07', label:'Distance from your home', category:'Location & Accessibility', direction:'cost' },
@@ -178,7 +182,10 @@ const CRITERIA = [
   { code:'C21', label:'Years of operation', category:'Institutional Reputation', direction:'benefit' },
   { code:'C22', label:'Institutional size', category:'Institutional Reputation', direction:'benefit' },
   { code:'C23', label:'Minimum entry grade', category:'Admission & Eligibility', direction:'cost' },
-  { code:'C24', label:'Required subject combinations', category:'Admission & Eligibility', direction:'benefit' },
+  // C24 "Required subject combinations" is intentionally not offered as a
+  // criterion — eligible combinations are a per-programme StaffCombosScreen
+  // setting, not a single scored number, and every university would score
+  // identically on it anyway.
   { code:'C25', label:'Religious / cultural affiliation', category:'Personal & Contextual', direction:'benefit' },
   { code:'C26', label:'Mode of study available', category:'Personal & Contextual', direction:'benefit' },
 ];

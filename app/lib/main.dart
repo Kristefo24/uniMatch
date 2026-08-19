@@ -1,11 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_map/flutter_map.dart'
+    show FlutterMap, MapController, MapOptions, TileLayer, MarkerLayer, Marker;
+import 'package:latlong2/latlong.dart' show LatLng;
+import 'package:image_picker/image_picker.dart';
 
 /// Official application pages per seeded university id.
 const Map<String, String> kApplyUrls = {
@@ -73,8 +78,10 @@ IconData iconForField(String text) {
   return Icons.school_outlined;
 }
 
-/// Every 2-subject combination from a staff-selected subject list — a
-/// student is eligible for a programme if they passed any pair shown here.
+/// Every 2-subject pair from the subjects staff marked acceptable within one
+/// A2 combination for a programme — e.g. selecting Maths/Chemistry/Biology
+/// for MCB means "Maths + Chemistry" OR "Maths + Biology" OR "Chemistry +
+/// Biology" all qualify. Capped naturally at 3 subjects per combination.
 List<String> subjectPairs(List<String> subs) {
   final out = <String>[];
   for (var i = 0; i < subs.length; i++) {
@@ -83,17 +90,49 @@ List<String> subjectPairs(List<String> subs) {
   return out;
 }
 
+
+/// Shared OpenStreetMap Nominatim helpers — used by both the A2 graduate's
+/// home-location map (`LocationScreen`) and staff's university/transport
+/// pin map (`StaffCriteriaScreen`). Nominatim's usage policy requires a
+/// distinct User-Agent and discourages high-frequency requests.
+const kNominatimUA = {'User-Agent': 'UniMatchGasabo/1.0'};
+String coordsLabel(LatLng p) => '${p.latitude.toStringAsFixed(4)}, ${p.longitude.toStringAsFixed(4)}';
+
+/// Resolves a lat/lng to a human-readable address, or null on any failure —
+/// callers fall back to `coordsLabel(p)` themselves.
+Future<String?> reverseGeocodeAddress(LatLng p) async {
+  try {
+    final uri = Uri.parse('https://nominatim.openstreetmap.org/reverse'
+        '?format=json&lat=${p.latitude}&lon=${p.longitude}');
+    final res = await http.get(uri, headers: kNominatimUA);
+    final data = jsonDecode(res.body) as Map;
+    return data['display_name'] as String?;
+  } catch (_) {
+    return null;
+  }
+}
+
 const List<String> kDepartments = [
   'Computer Science', 'Software Engineering', 'Information Technology',
   'Business Administration', 'Accounting', 'Nursing', 'Medicine', 'Pharmacy',
 ];
 
-// A2 combinations a student can pick on signup.
-const List<Map<String, String>> kTracks = [
-  {'id': 'sciences', 'label': 'Sciences (MPC/BCG)'},
-  {'id': 'humanities', 'label': 'Humanities (HGL)'},
-  {'id': 'languages', 'label': 'Languages (LKK)'},
-  {'id': 'commerce', 'label': 'Commerce (MEG)'},
+// A2 combination codes a student can pick at signup / edit profile, each
+// mapped to its fixed 3 subjects. Best-effort starter list — edit freely,
+// this is exactly the map staff-set principal passes are validated against.
+const Map<String, List<String>> kCombinationSubjects = {
+  'PCB': ['Physics', 'Chemistry', 'Biology'],
+  'PCM': ['Physics', 'Chemistry', 'Mathematics'],
+  'MCB': ['Mathematics', 'Chemistry', 'Biology'],
+  'MPC': ['Mathematics', 'Physics', 'Computer Science'],
+  'MPG': ['Mathematics', 'Physics', 'Geography'],
+  'BCG': ['Biology', 'Chemistry', 'Geography'],
+  'HGL': ['History', 'Geography', 'Literature in English'],
+  'MEG': ['Mathematics', 'Economics', 'Geography'],
+  'LKK': ['Kinyarwanda', 'English', 'French'],
+};
+const List<String> kCombinations = [
+  'PCB', 'PCM', 'MCB', 'MPC', 'MPG', 'BCG', 'HGL', 'MEG', 'LKK',
 ];
 
 /// ---- Theme (matches the UniMatch design system) ----------------------------
@@ -166,21 +205,30 @@ class Api {
 
   static Future<Map<String, dynamic>> signup(String name, String email,
           String password, String role,
-          {String? track, String? universityId}) =>
-      _post('/signup', {
-        'name': name,
-        'email': email,
-        'password': password,
-        'role': role,
-        if (track != null) 'track': track,
-        if (universityId != null) 'universityId': universityId,
-      });
+          {String? track, String? universityId}) async {
+    final res = await _post('/signup', {
+      'name': name,
+      'email': email,
+      'password': password,
+      'role': role,
+      if (track != null) 'track': track,
+      if (universityId != null) 'universityId': universityId,
+    });
+    if (res['token'] != null) token = res['token'];
+    return res;
+  }
 
   static Future<Map<String, dynamic>> login(String email, String password) async {
     final res = await _post('/login', {'email': email, 'password': password});
     token = res['token'];
     return res;
   }
+
+  static Future<Map<String, dynamic>> updateMe({String? name, String? track, String? photo}) => _put('/me', {
+        if (name != null) 'name': name,
+        if (track != null) 'track': track,
+        if (photo != null) 'photo': photo,
+      });
 
   static Future<List<dynamic>> programmes(String? dept) async =>
       await _get('/programmes${dept != null ? '?dept=${Uri.encodeQueryComponent(dept)}' : ''}') as List<dynamic>;
@@ -194,11 +242,19 @@ class Api {
     return list;
   }
 
-  static Future<List<dynamic>> rank(List<Map<String, dynamic>> criteria, {String? preferredReligion}) async {
+  static Future<List<dynamic>> rank(List<Map<String, dynamic>> criteria, {
+    String? preferredReligion, String? dept, double? homeLat, double? homeLng,
+    double? budgetMin, double? budgetMax,
+  }) async {
     final res = await _post('/rank', {
       'universityIds': kUniversityIds,
       'criteria': criteria,
       if (preferredReligion != null) 'preferredReligion': preferredReligion,
+      if (dept != null) 'dept': dept,
+      if (homeLat != null) 'homeLat': homeLat,
+      if (homeLng != null) 'homeLng': homeLng,
+      if (budgetMin != null) 'budgetMin': budgetMin,
+      if (budgetMax != null) 'budgetMax': budgetMax,
     });
     return List<dynamic>.from(res['ranked'] ?? []);
   }
@@ -240,6 +296,8 @@ class Api {
   static Future<void> confirmStaff(String id) => _post('/staff-requests/$id/confirm', {});
   static Future<Map<String, dynamic>> forgotPassword(String email) =>
       _post('/forgot-password', {'email': email});
+  static Future<void> resetPassword(String email, String otp, String password) =>
+      _post('/reset-password', {'email': email, 'otp': otp, 'password': password});
   static Future<void> setStaffStatus(String id, String status) =>
       _post('/staff-requests/$id/status', {'status': status});
   static Future<void> deleteStaff(String id) => _delete('/staff-requests/$id');
@@ -251,10 +309,14 @@ class Api {
       _put('/staff/$uniId/campuses', {'campuses': campuses});
   static Future<void> saveStaffCombos(String uniId, Map combos) =>
       _put('/staff/$uniId/combos', {'combos': combos});
+  static Future<void> saveStaffProgrammes(String uniId, List programmes) =>
+      _put('/staff/$uniId/programmes', {'programmes': programmes});
   static Future<void> saveStaffCriteria(String uniId, Map criteria) =>
       _put('/staff/$uniId/criteria', {'criteria': criteria});
   static Future<Map<String, dynamic>> staffReport(String uniId) async =>
       Map<String, dynamic>.from(await _get('/staff/$uniId/report'));
+  static Future<void> updateUniversityPhoto(String uniId, String? photo) =>
+      _put('/staff/$uniId/photo', {'photo': photo});
   static Future<Map<String, dynamic>> adminReport() async =>
       Map<String, dynamic>.from(await _get('/admin/report'));
 
@@ -303,10 +365,93 @@ class Session {
   static List<dynamic>? criteriaCatalogue;
   static String? selectedProgramme;
   static String homeArea = '';
+  static double? homeLat;
+  static double? homeLng;
   static String? preferredReligion;
+  static String? track;
+  static String? selectedDept;
+  static double? budgetMin;
+  static double? budgetMax;
+  static String? photo;
 
   static String get initial => name.isEmpty ? 'U' : name.trim()[0].toUpperCase();
   static String get first => name.isEmpty ? '' : name.split(' ').first;
+}
+
+/// Decodes a photo data: URI (e.g. "data:image/jpeg;base64,...") into an
+/// ImageProvider, or null if unset/unparseable.
+ImageProvider? _decodeAvatarPhoto(String? p) {
+  if (p == null || p.isEmpty) return null;
+  try {
+    final b64 = p.contains(',') ? p.split(',').last : p;
+    return MemoryImage(base64Decode(b64));
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Bumped whenever Session.photo changes so every mounted userAvatar(),
+/// on whichever page/role it's shown on, repaints immediately — the app
+/// has no shared state container, so this is the one signal that stands
+/// in for "the avatar changed, please redraw."
+final ValueNotifier<int> _avatarVersion = ValueNotifier<int>(0);
+void _bumpAvatar() => _avatarVersion.value++;
+
+/// The logged-in user's own avatar — their uploaded photo when set, else
+/// their initial on a colored circle. Used everywhere the current user's
+/// identity is shown (app bar menu, every role's drawer header).
+Widget userAvatar({double radius = 17, Color bg = C.green, Color fg = Colors.white}) {
+  return ValueListenableBuilder<int>(
+    valueListenable: _avatarVersion,
+    builder: (context, _, __) {
+      final img = _decodeAvatarPhoto(Session.photo);
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: bg,
+        backgroundImage: img,
+        child: img == null
+            ? Text(Session.initial, style: TextStyle(color: fg, fontWeight: FontWeight.w700, fontSize: radius * 0.68))
+            : null,
+      );
+    },
+  );
+}
+
+/// A university's badge/crest as displayed to admin and A2 graduate users —
+/// the staff-uploaded photo when set, else the existing colored-abbreviation
+/// box. Callers already hold the university Map (from /rank, /admin/universities
+/// or /universities/:id, all of which now include `photo`), so this reads
+/// straight off it rather than needing its own Session-style version counter.
+Widget universityLogo(Map u, {
+  double size = 44, double radius = 12, double fontSize = 12,
+  bool circle = false, Color? bg, Color? textColor,
+}) {
+  final abbr = '${u['abbr'] ?? ''}';
+  final img = _decodeAvatarPhoto(u['photo'] as String?);
+  final bgColor = bg ?? C.uni(abbr);
+  final txtColor = textColor ?? C.gold;
+  if (circle) {
+    return CircleAvatar(
+      radius: size / 2,
+      backgroundColor: bgColor,
+      backgroundImage: img,
+      child: img == null
+          ? Text(abbr, style: TextStyle(color: txtColor, fontWeight: FontWeight.w700, fontSize: fontSize))
+          : null,
+    );
+  }
+  return Container(
+    width: size, height: size,
+    decoration: BoxDecoration(
+      color: bgColor,
+      borderRadius: BorderRadius.circular(radius),
+      image: img == null ? null : DecorationImage(image: img, fit: BoxFit.cover),
+    ),
+    alignment: Alignment.center,
+    child: img == null
+        ? Text(abbr, style: TextStyle(color: txtColor, fontWeight: FontWeight.w700, fontSize: fontSize))
+        : null,
+  );
 }
 
 /// ---- Shared chrome: profile menu + admin drawer ---------------------------
@@ -315,29 +460,128 @@ Future<void> _logout(BuildContext context) async {
   Session.name = ''; Session.email = ''; Session.role = 'student'; Session.uniId = null;
   Session.criteriaCatalogue = null;
   Session.selectedProgramme = null; Session.homeArea = ''; Session.lastRanking = null;
+  Session.track = null;
+  Session.homeLat = null; Session.homeLng = null; Session.selectedDept = null;
+  Session.budgetMin = null; Session.budgetMax = null; Session.preferredReligion = null;
+  Session.photo = null;
+  _bumpAvatar();
   Navigator.pushAndRemoveUntil(
       context, MaterialPageRoute(builder: (_) => const OnboardingScreen()), (r) => false);
 }
 
 Future<void> _editProfile(BuildContext context) async {
   final name = TextEditingController(text: Session.name);
+  String? track = Session.track;
+  String? photo = Session.photo;
+  bool saving = false;
+  bool uploadingPhoto = false;
   await showModalBottomSheet(
     context: context,
     isScrollControlled: true,
     backgroundColor: C.cream,
     shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-    builder: (ctx) => Padding(
+    builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) => Padding(
       padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
       child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Edit profile', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
         const SizedBox(height: 16),
+        Center(
+          child: GestureDetector(
+            onTap: uploadingPhoto ? null : () async {
+              try {
+                final file = await ImagePicker().pickImage(
+                    source: ImageSource.gallery, maxWidth: 320, maxHeight: 320, imageQuality: 70);
+                if (file == null) return;
+                final bytes = await file.readAsBytes();
+                final ext = file.name.toLowerCase().endsWith('.png') ? 'png' : 'jpeg';
+                final dataUri = 'data:image/$ext;base64,${base64Encode(bytes)}';
+                setSheet(() { photo = dataUri; uploadingPhoto = true; });
+                try {
+                  // Auto-saves immediately on pick — the photo doesn't wait for the
+                  // "Save" button, and every avatar shown app-wide (any role) updates
+                  // right away via _bumpAvatar(). For staff, the same photo also
+                  // becomes their university's photo — one upload, shown everywhere
+                  // a photo is needed, no separate "institution photo" control.
+                  final jobs = <Future>[Api.updateMe(photo: dataUri)];
+                  if (Session.role == 'staff' && Session.uniId != null) {
+                    jobs.add(Api.updateUniversityPhoto(Session.uniId!, dataUri));
+                  }
+                  await Future.wait(jobs);
+                  Session.photo = dataUri;
+                  _bumpAvatar();
+                  if (ctx.mounted) toast(ctx, 'Photo updated');
+                } catch (e) {
+                  if (ctx.mounted) toast(ctx, 'Could not save photo: $e');
+                } finally {
+                  if (ctx.mounted) setSheet(() => uploadingPhoto = false);
+                }
+              } catch (e) {
+                if (ctx.mounted) toast(ctx, 'Could not open photo picker: $e');
+              }
+            },
+            child: Stack(children: [
+              CircleAvatar(
+                radius: 40,
+                backgroundColor: C.green,
+                backgroundImage: _decodeAvatarPhoto(photo),
+                child: _decodeAvatarPhoto(photo) == null
+                    ? Text(Session.initial, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w700))
+                    : null,
+              ),
+              if (uploadingPhoto)
+                const Positioned.fill(
+                  child: CircleAvatar(
+                    radius: 40,
+                    backgroundColor: Color(0x99000000),
+                    child: SizedBox(width: 24, height: 24,
+                        child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white)),
+                  ),
+                ),
+              Positioned(
+                right: 0, bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: const BoxDecoration(color: C.gold, shape: BoxShape.circle),
+                  child: const Icon(Icons.camera_alt, size: 16, color: C.greenDark),
+                ),
+              ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 16),
         TextField(controller: name, decoration: fieldDeco('Full name')),
         const SizedBox(height: 12),
         TextField(enabled: false, decoration: fieldDeco(Session.email)),
+        if (Session.role == 'student') ...[
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            value: track,
+            isExpanded: true,
+            decoration: fieldDeco('A2 combination'),
+            hint: const Text('Select your combination'),
+            items: kCombinations.map((c) => DropdownMenuItem(
+                value: c,
+                child: Text('$c (${kCombinationSubjects[c]?.join(' / ') ?? ''})'))).toList(),
+            onChanged: (v) => setSheet(() => track = v),
+          ),
+        ],
         const SizedBox(height: 20),
-        primaryButton('Save', () { Session.name = name.text.trim(); Navigator.pop(ctx); }),
+        primaryButton('Save', () async {
+          setSheet(() => saving = true);
+          try {
+            await Api.updateMe(name: name.text.trim(), track: track, photo: photo);
+            Session.name = name.text.trim();
+            Session.track = track;
+            Session.photo = photo;
+            _bumpAvatar();
+            if (ctx.mounted) Navigator.pop(ctx);
+          } catch (e) {
+            setSheet(() => saving = false);
+            if (ctx.mounted) toast(ctx, e.toString());
+          }
+        }, loading: saving),
       ]),
-    ),
+    )),
   );
 }
 
@@ -359,8 +603,7 @@ Widget profileAction(BuildContext context) => Padding(
           const PopupMenuItem(value: 'logout', child: Row(children: [
             Icon(Icons.logout, size: 18, color: Color(0xFFC25A1F)), SizedBox(width: 10), Text('Log out')])),
         ],
-        child: CircleAvatar(radius: 17, backgroundColor: C.green,
-            child: Text(Session.initial, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700))),
+        child: userAvatar(radius: 17, bg: C.green),
       ),
     );
 
@@ -374,8 +617,7 @@ Drawer adminDrawer(BuildContext context) => Drawer(
             padding: const EdgeInsets.all(20),
             color: C.green,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              CircleAvatar(radius: 22, backgroundColor: C.gold,
-                  child: Text(Session.initial, style: const TextStyle(color: C.greenDark, fontWeight: FontWeight.w700))),
+              userAvatar(radius: 22, bg: C.gold, fg: C.greenDark),
               const SizedBox(height: 10),
               Text(Session.name.isEmpty ? 'Administrator' : Session.name,
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16)),
@@ -646,6 +888,9 @@ class _LoginScreenState extends State<LoginScreen> {
       Session.email = user['email'] ?? '';
       Session.role = user['role'] ?? 'student';
       Session.uniId = user['universityId'];
+      Session.track = user['track'];
+      Session.photo = user['photo'];
+      _bumpAvatar();
       if (!mounted) return;
       _routeByRole(context, Session.role);
     } catch (e) {
@@ -732,7 +977,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       if (res['staff'] == true) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const _StaffResetPendingScreen()));
       } else {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => OtpResetScreen(email: email.text.trim())));
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) =>
+            OtpResetScreen(email: email.text.trim(), demoOtp: res['otp'] as String?)));
       }
     } catch (e) {
       if (mounted) toast(context, e.toString());
@@ -792,7 +1038,8 @@ class _StaffResetPendingScreen extends StatelessWidget {
 
 class OtpResetScreen extends StatefulWidget {
   final String email;
-  const OtpResetScreen({super.key, required this.email});
+  final String? demoOtp;
+  const OtpResetScreen({super.key, required this.email, this.demoOtp});
   @override
   State<OtpResetScreen> createState() => _OtpResetScreenState();
 }
@@ -801,6 +1048,7 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
   final otp = TextEditingController();
   final pass = TextEditingController();
   int seconds = 120;
+  bool submitting = false;
   Timer? _timer;
 
   @override
@@ -827,7 +1075,10 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Enter reset code', style: head(28)),
             const SizedBox(height: 8),
-            Text('We sent a 6-digit code to ${widget.email}. (Demo code: 123456)',
+            Text(widget.demoOtp != null
+                    ? 'We sent a 6-digit code to ${widget.email}. No email service is configured for this '
+                        'deployment, so your code is shown here instead: ${widget.demoOtp}'
+                    : 'We sent a 6-digit code to ${widget.email}.',
                 style: const TextStyle(color: C.muted, fontSize: 14)),
             const SizedBox(height: 24),
             TextField(
@@ -843,12 +1094,19 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
             const SizedBox(height: 20),
             TextField(controller: pass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
             const SizedBox(height: 24),
-            primaryButton('Reset password', () {
+            primaryButton('Reset password', () async {
               if (otp.text.trim().isEmpty || pass.text.isEmpty) { toast(context, 'Enter the code and a new password'); return; }
-              toast(context, 'Password reset — you can log in now.');
-              Navigator.pushAndRemoveUntil(context,
-                  MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
-            }),
+              setState(() => submitting = true);
+              try {
+                await Api.resetPassword(widget.email, otp.text.trim(), pass.text);
+                if (!mounted) return;
+                toast(context, 'Password reset — you can log in now.');
+                Navigator.pushAndRemoveUntil(context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
+              } catch (e) {
+                if (mounted) { setState(() => submitting = false); toast(context, e.toString()); }
+              }
+            }, loading: submitting),
           ]),
         ),
       ),
@@ -868,7 +1126,7 @@ class _SignupScreenState extends State<SignupScreen> {
   final email = TextEditingController();
   final pass = TextEditingController();
   String role = 'student';
-  String track = 'sciences';          // A2 track (student)
+  String? track;                      // A2 combination code (student)
   String? uniId;                       // university you work for (staff)
   List<dynamic> universities = [];     // loaded for the staff dropdown
   bool loading = false;
@@ -893,9 +1151,13 @@ class _SignupScreenState extends State<SignupScreen> {
       toast(context, 'Please choose the university you work for.');
       return;
     }
+    if (role == 'student' && track == null) {
+      toast(context, 'Please choose your A2 combination.');
+      return;
+    }
     setState(() => loading = true);
     try {
-      await Api.signup(name.text.trim(), email.text.trim(), pass.text, role,
+      final res = await Api.signup(name.text.trim(), email.text.trim(), pass.text, role,
           track: role == 'student' ? track : null,
           universityId: role == 'staff' ? uniId : null);
       if (!mounted) return;
@@ -904,7 +1166,9 @@ class _SignupScreenState extends State<SignupScreen> {
         Navigator.pop(context);
       } else {
         Navigator.push(context,
-            MaterialPageRoute(builder: (_) => VerifyScreen(email: email.text.trim())));
+            MaterialPageRoute(builder: (_) => VerifyScreen(
+                email: email.text.trim(),
+                user: (res['user'] as Map?)?.cast<String, dynamic>())));
       }
     } catch (e) {
       if (mounted) toast(context, e.toString());
@@ -931,26 +1195,6 @@ class _SignupScreenState extends State<SignupScreen> {
               style: TextStyle(
                   color: sel ? Colors.white : C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
         ),
-      ),
-    );
-  }
-
-  Widget _trackChip(Map<String, String> t) {
-    final sel = track == t['id'];
-    return GestureDetector(
-      onTap: () => setState(() => track = t['id']!),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-        decoration: BoxDecoration(
-          color: sel ? C.green : Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: sel ? C.green : C.border),
-        ),
-        alignment: Alignment.center,
-        child: Text(t['label']!,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-                color: sel ? Colors.white : C.ink, fontWeight: FontWeight.w600, fontSize: 12)),
       ),
     );
   }
@@ -990,17 +1234,18 @@ class _SignupScreenState extends State<SignupScreen> {
               TextField(controller: email, decoration: fieldDeco('amara@example.com')),
               const SizedBox(height: 16),
 
-              // ---- STUDENT: A2 track ----
+              // ---- STUDENT: A2 combination ----
               if (role == 'student') ...[
-                _label('A2 TRACK'),
-                GridView.count(
-                  crossAxisCount: 2,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  childAspectRatio: 3.2,
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
-                  children: kTracks.map(_trackChip).toList(),
+                _label('A2 COMBINATION'),
+                DropdownButtonFormField<String>(
+                  value: track,
+                  isExpanded: true,
+                  decoration: fieldDeco('Select your combination'),
+                  hint: const Text('Select your combination'),
+                  items: kCombinations.map((c) => DropdownMenuItem(
+                      value: c,
+                      child: Text('$c (${kCombinationSubjects[c]?.join(' / ') ?? ''})'))).toList(),
+                  onChanged: (v) => setState(() => track = v),
                 ),
                 const SizedBox(height: 16),
               ],
@@ -1046,7 +1291,8 @@ class _SignupScreenState extends State<SignupScreen> {
 /// ---- Email verify (2-min countdown) ---------------------------------------
 class VerifyScreen extends StatefulWidget {
   final String email;
-  const VerifyScreen({super.key, required this.email});
+  final Map<String, dynamic>? user;
+  const VerifyScreen({super.key, required this.email, this.user});
   @override
   State<VerifyScreen> createState() => _VerifyScreenState();
 }
@@ -1108,7 +1354,15 @@ class _VerifyScreenState extends State<VerifyScreen> {
               const SizedBox(height: 24),
               primaryButton('Verify & continue', () {
                 // Demo: backend verify is token-based; continue to student home.
+                final user = widget.user;
                 Session.role = 'student';
+                if (user != null) {
+                  Session.name = user['name'] ?? '';
+                  Session.email = user['email'] ?? '';
+                  Session.track = user['track'];
+                  Session.photo = user['photo'];
+                  _bumpAvatar();
+                }
                 _routeByRole(context, 'student');
               }),
               const SizedBox(height: 12),
@@ -1293,13 +1547,7 @@ class _StudentHomeState extends State<StudentHome> {
                       decoration: BoxDecoration(
                           color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: C.border)),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Container(
-                          width: 40, height: 40,
-                          decoration: BoxDecoration(color: C.uni('${m['abbr']}'), borderRadius: BorderRadius.circular(11)),
-                          alignment: Alignment.center,
-                          child: Text(m['abbr'] ?? '', style: const TextStyle(
-                              color: C.gold, fontWeight: FontWeight.w700, fontSize: 11)),
-                        ),
+                        universityLogo(m, size: 40, radius: 11, fontSize: 11),
                         const SizedBox(height: 10),
                         Text(m['name'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.ink, height: 1.2)),
@@ -1392,12 +1640,7 @@ class _AllUniversitiesA2ScreenState extends State<AllUniversitiesA2Screen> {
                               decoration: BoxDecoration(
                                   color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
                               child: Row(children: [
-                                Container(
-                                  width: 44, height: 44,
-                                  decoration: BoxDecoration(color: C.uni('${m['abbr']}'), borderRadius: BorderRadius.circular(12)),
-                                  alignment: Alignment.center,
-                                  child: Text(m['abbr'] ?? '', style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700, fontSize: 12)),
-                                ),
+                                universityLogo(m, size: 44, radius: 12, fontSize: 12),
                                 const SizedBox(width: 12),
                                 Expanded(child: Text(m['name'] ?? '',
                                     style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink))),
@@ -1493,15 +1736,21 @@ class _CompareScreenState extends State<CompareScreen> {
   }
 
   Future<void> _loadDetail(String id) async {
+    final jobs = <Future<void>>[];
     if (!_detailCache.containsKey(id)) {
-      try { _detailCache[id] = await Api.university(id); } catch (_) {}
+      jobs.add(() async {
+        try { _detailCache[id] = await Api.university(id); } catch (_) {}
+      }());
     }
     if (!_staffCache.containsKey(id)) {
-      try {
-        final d = await Api.universityAnswers(id);
-        _staffCache[id] = Map<String, dynamic>.from((d['criteria'] as Map?) ?? {});
-      } catch (_) {}
+      jobs.add(() async {
+        try {
+          final d = await Api.universityAnswers(id);
+          _staffCache[id] = Map<String, dynamic>.from((d['criteria'] as Map?) ?? {});
+        } catch (_) {}
+      }());
     }
+    await Future.wait(jobs);
   }
 
   Future<void> _change(bool isLeft) async {
@@ -1516,8 +1765,7 @@ class _CompareScreenState extends State<CompareScreen> {
           ...unis.map((u) {
             final m = u as Map;
             return ListTile(
-              leading: CircleAvatar(backgroundColor: C.uni('${m['abbr']}'),
-                  child: Text('${m['abbr']}', style: const TextStyle(color: C.gold, fontSize: 10, fontWeight: FontWeight.w700))),
+              leading: universityLogo(m, size: 32, fontSize: 10, circle: true),
               title: Text('${m['name']}', style: const TextStyle(fontSize: 13)),
               onTap: () => Navigator.pop(ctx, Map<String, dynamic>.from(m)),
             );
@@ -1638,6 +1886,19 @@ Widget _heroStat(String value, String label) => Expanded(
       ]),
     );
 Widget _heroDiv() => Container(width: 1, height: 34, color: const Color(0x33F5E7B8), margin: const EdgeInsets.symmetric(horizontal: 12));
+
+/// Great-circle distance in km between two lat/lng points (Haversine).
+/// Mirrors server/topsis.js's haversineKm — used client-side only for live
+/// staff-facing preview; the server recomputes and persists the
+/// authoritative value on save.
+double haversineKm(double lat1, double lon1, double lat2, double lon2) {
+  const r = 6371.0;
+  final dLat = (lat2 - lat1) * math.pi / 180;
+  final dLon = (lon2 - lon1) * math.pi / 180;
+  final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+      math.cos(lat1 * math.pi / 180) * math.cos(lat2 * math.pi / 180) * math.sin(dLon / 2) * math.sin(dLon / 2);
+  return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+}
 
 /// Prettify a raw staff answer key (e.g. "partnerSchools" → "Partner schools").
 String _prettyKey(String k) {
@@ -1766,12 +2027,7 @@ class _ShortlistScreenState extends State<ShortlistScreen> {
                                         GestureDetector(
                                           onTap: () => Navigator.push(context, MaterialPageRoute(
                                               builder: (_) => DetailScreen(id: m['id'], name: m['name']))),
-                                          child: Container(
-                                            width: 44, height: 44,
-                                            decoration: BoxDecoration(color: C.uni('${m['abbr']}'), borderRadius: BorderRadius.circular(12)),
-                                            alignment: Alignment.center,
-                                            child: Text(m['abbr'] ?? '', style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700, fontSize: 12)),
-                                          ),
+                                          child: universityLogo(m, size: 44, radius: 12, fontSize: 12),
                                         ),
                                         const SizedBox(width: 12),
                                         Expanded(
@@ -1924,15 +2180,29 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
     }).catchError((_) {});
   }
 
-  /// Real principal-pass combinations set by the university's own staff for
-  /// this programme — no fabricated eligibility hints.
-  Map<String, List<String>> _eligibilityByUni(String programmeName, List<Map> offerings) {
-    final out = <String, List<String>>{};
+  /// The subjects the university's own staff marked acceptable for this
+  /// programme, keyed by A2 combination code — no fabricated eligibility
+  /// hints. Any 2 of the listed subjects together qualify (e.g. Maths,
+  /// Chemistry, Biology under MCB means Maths+Chemistry OR Maths+Biology OR
+  /// Chemistry+Biology). Shows only the logged-in student's own combination
+  /// when it's set for this programme; otherwise falls back to every
+  /// combination staff DID set.
+  Map<String, List<MapEntry<String, List<String>>>> _eligibilityByUni(String programmeName, List<Map> offerings) {
+    final out = <String, List<MapEntry<String, List<String>>>>{};
     for (final o in offerings) {
       final uniId = '${o['universityId']}';
-      final combos = (uniById[uniId]?['combos'] as Map?) ?? {};
-      final subs = List<String>.from((combos[programmeName] as List?) ?? const []);
-      if (subs.length >= 2) out[uniId] = subjectPairs(subs);
+      final raw = (uniById[uniId]?['combos'] as Map?)?[programmeName];
+      if (raw is! Map) continue; // unset, or old pre-combination shape
+      final byCode = <String, List<String>>{};
+      raw.forEach((k, v) {
+        final subs = List<String>.from(v as List);
+        if (subjectPairs(subs).isNotEmpty) byCode['$k'] = subs;
+      });
+      if (byCode.isEmpty) continue;
+      final track = Session.track;
+      out[uniId] = (track != null && byCode.containsKey(track))
+          ? [MapEntry(track, byCode[track]!)]
+          : byCode.entries.toList();
     }
     return out;
   }
@@ -1998,7 +2268,9 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                           final offerings = byName[name]!;
                           final unis = offerings.map((p) => uniNames[p['universityId']] ?? '').where((s) => s.isNotEmpty).toSet().join(', ');
                           final sel = selectedProgramme == name;
-                          final eligibility = sel ? _eligibilityByUni(name, offerings) : const <String, List<String>>{};
+                          final eligibility = sel
+                              ? _eligibilityByUni(name, offerings)
+                              : const <String, List<MapEntry<String, List<String>>>>{};
                           return GestureDetector(
                             onTap: () => setState(() => selectedProgramme = name),
                             child: Container(
@@ -2032,21 +2304,42 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                                 ]),
                                 if (sel && eligibility.isNotEmpty) ...[
                                   const SizedBox(height: 12),
-                                  const Text('Principal passes required (set by each university)',
-                                      style: TextStyle(color: C.muted, fontSize: 10.5, fontWeight: FontWeight.w600)),
-                                  const SizedBox(height: 6),
-                                  ...eligibility.entries.map((e) => Padding(
-                                        padding: const EdgeInsets.only(bottom: 6),
-                                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                          Text(uniNames[e.key] ?? '', style: const TextStyle(color: C.ink, fontSize: 11.5, fontWeight: FontWeight.w600)),
+                                  if (Session.track == null)
+                                    Text('Principal passes (set by each university)',
+                                        style: const TextStyle(color: C.muted, fontSize: 10.5, fontWeight: FontWeight.w600)),
+                                  if (Session.track == null) const SizedBox(height: 6),
+                                  ...eligibility.entries.map((e) {
+                                    final uniName = uniNames[e.key] ?? '';
+                                    final subjects = <String>{};
+                                    for (final entry in e.value) subjects.addAll(entry.value);
+                                    final list = subjects.toList();
+                                    final phrase = list.length <= 2
+                                        ? 'Eligible if you passed: ${list.join(' and ')}'
+                                        : 'Eligible if you passed any 2 of: ${list.join(', ')}';
+                                    return Padding(
+                                      padding: const EdgeInsets.only(bottom: 8),
+                                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                        if (eligibility.length > 1) ...[
+                                          Text(uniName, style: const TextStyle(color: C.ink, fontSize: 11.5, fontWeight: FontWeight.w600)),
                                           const SizedBox(height: 4),
-                                          Wrap(spacing: 6, runSpacing: 6, children: e.value.map((pair) => Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                                decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
-                                                child: Text(pair, style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
-                                              )).toList()),
-                                        ]),
-                                      )),
+                                        ],
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFFDF3D9),
+                                            borderRadius: BorderRadius.circular(10),
+                                            border: Border.all(color: C.gold),
+                                          ),
+                                          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                            const Icon(Icons.info_outline, size: 15, color: C.greenDark),
+                                            const SizedBox(width: 8),
+                                            Expanded(child: Text(phrase,
+                                                style: const TextStyle(fontSize: 11.5, color: C.greenDark, fontWeight: FontWeight.w600, height: 1.35))),
+                                          ]),
+                                        ),
+                                      ]),
+                                    );
+                                  }),
                                 ],
                               ]),
                             ),
@@ -2064,6 +2357,7 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                         ? null
                         : () {
                             Session.selectedProgramme = selectedProgramme;
+                            Session.selectedDept = widget.dept;
                             Navigator.push(context, MaterialPageRoute(builder: (_) => const CriteriaScreen()));
                           },
                     style: ElevatedButton.styleFrom(
@@ -2285,7 +2579,43 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                       ]),
                                     ),
                                   );
-                                  if (code != 'C25' || !sel) return row;
+                                  if (!sel || (code != 'C25' && code != 'C01')) return row;
+                                  Widget panelBody;
+                                  if (code == 'C25') {
+                                    panelBody = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                      const Text('WHICH RELIGION OR CULTURE DO YOU PREFER?', style: TextStyle(
+                                          fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
+                                      const SizedBox(height: 8),
+                                      DropdownButtonFormField<String>(
+                                        value: kReligions.contains(Session.preferredReligion) ? Session.preferredReligion : null,
+                                        isExpanded: true,
+                                        decoration: fieldDeco('Select religion or culture'),
+                                        hint: const Text('Select religion or culture'),
+                                        items: kReligions.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
+                                        onChanged: (v) => setState(() => Session.preferredReligion = v),
+                                      ),
+                                    ]);
+                                  } else {
+                                    final lo = (Session.budgetMin ?? 500000).clamp(500000, 20000000).toDouble();
+                                    final hi = (Session.budgetMax ?? 20000000).clamp(500000, 20000000).toDouble();
+                                    panelBody = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                      const Text('YOUR BUDGET RANGE (RWF / YEAR)', style: TextStyle(
+                                          fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
+                                      const SizedBox(height: 4),
+                                      Text('${_fmtRwf(lo)} – ${_fmtRwf(hi)}',
+                                          style: const TextStyle(color: C.ink, fontWeight: FontWeight.w700, fontSize: 13)),
+                                      RangeSlider(
+                                        values: RangeValues(lo, hi),
+                                        min: 500000, max: 20000000, divisions: 39,
+                                        activeColor: C.green, inactiveColor: C.sand,
+                                        labels: RangeLabels(_fmtRwf(lo), _fmtRwf(hi)),
+                                        onChanged: (v) => setState(() {
+                                          Session.budgetMin = v.start;
+                                          Session.budgetMax = v.end;
+                                        }),
+                                      ),
+                                    ]);
+                                  }
                                   return Padding(
                                     padding: const EdgeInsets.only(bottom: 6),
                                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -2298,19 +2628,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                           borderRadius: BorderRadius.circular(12),
                                           border: Border.all(color: C.border),
                                         ),
-                                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                          const Text('WHICH RELIGION OR CULTURE DO YOU PREFER?', style: TextStyle(
-                                              fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
-                                          const SizedBox(height: 8),
-                                          DropdownButtonFormField<String>(
-                                            value: kReligions.contains(Session.preferredReligion) ? Session.preferredReligion : null,
-                                            isExpanded: true,
-                                            decoration: fieldDeco('Select religion or culture'),
-                                            hint: const Text('Select religion or culture'),
-                                            items: kReligions.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
-                                            onChanged: (v) => setState(() => Session.preferredReligion = v),
-                                          ),
-                                        ]),
+                                        child: panelBody,
                                       ),
                                     ]),
                                   );
@@ -2373,18 +2691,64 @@ class LocationScreen extends StatefulWidget {
 
 class _LocationScreenState extends State<LocationScreen> {
   final addr = TextEditingController();
+  final MapController _mapController = MapController();
+  static const _gasabo = LatLng(-1.9358, 30.0930);
+
   String? picked;
-  static const _suggestions = [
-    ['Kacyiru', 'Gasabo, Kigali'], ['Kimironko', 'Gasabo, Kigali'],
-    ['Remera', 'Gasabo, Kigali'], ['Kinyinya', 'Gasabo, Kigali'],
-    ['Ndera', 'Gasabo, Kigali'], ['Bumbogo', 'Gasabo, Kigali'],
-  ];
+  LatLng? pin;
+  List<Map<String, dynamic>> searchResults = [];
+  Timer? _debounce;
+  bool locating = false;
+
+  @override
+  void dispose() {
+    addr.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _reverseGeocode(LatLng p) async {
+    setState(() { pin = p; locating = true; });
+    final label = await reverseGeocodeAddress(p);
+    if (mounted) setState(() { picked = label ?? coordsLabel(p); locating = false; });
+  }
+
+  void _onSearchChanged(String v) {
+    _debounce?.cancel();
+    if (v.trim().isEmpty) { setState(() => searchResults = []); return; }
+    _debounce = Timer(const Duration(milliseconds: 500), () => _search(v.trim()));
+  }
+
+  Future<void> _search(String q) async {
+    try {
+      final uri = Uri.parse('https://nominatim.openstreetmap.org/search'
+          '?format=json&limit=5&countrycodes=rw&q=${Uri.encodeQueryComponent('$q, Kigali, Rwanda')}');
+      final res = await http.get(uri, headers: kNominatimUA);
+      final list = (jsonDecode(res.body) as List).cast<Map>().map((m) => m.cast<String, dynamic>()).toList();
+      if (mounted) setState(() => searchResults = list);
+    } catch (_) {
+      if (mounted) setState(() => searchResults = []);
+    }
+  }
+
+  void _selectResult(Map<String, dynamic> r) {
+    final lat = double.tryParse('${r['lat']}');
+    final lon = double.tryParse('${r['lon']}');
+    setState(() {
+      picked = r['display_name'] as String?;
+      addr.text = picked ?? '';
+      searchResults = [];
+    });
+    if (lat != null && lon != null) {
+      final p = LatLng(lat, lon);
+      setState(() => pin = p);
+      _mapController.move(p, 15);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final results = addr.text.trim().isEmpty
-        ? const <List<String>>[]
-        : _suggestions.where((s) => s[0].toLowerCase().contains(addr.text.trim().toLowerCase())).toList();
+    final results = searchResults;
     return Scaffold(
       drawer: a2Drawer(context),
       appBar: a2AppBar(context, 'Where do you live?', back: true),
@@ -2401,14 +2765,14 @@ class _LocationScreenState extends State<LocationScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Where do you\nlive?', style: head(24)),
               const SizedBox(height: 4),
-              const Text('Real driving distance via Google Maps.', style: TextStyle(color: C.muted, fontSize: 12)),
+              const Text('Search your address, or tap the map to drop a pin.', style: TextStyle(color: C.muted, fontSize: 12)),
             ]),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: TextField(
               controller: addr,
-              onChanged: (_) => setState(() {}),
+              onChanged: _onSearchChanged,
               decoration: InputDecoration(
                 hintText: 'Search sector or address…',
                 prefixIcon: const Icon(Icons.search, color: C.muted),
@@ -2426,51 +2790,75 @@ class _LocationScreenState extends State<LocationScreen> {
               child: Container(
                 decoration: BoxDecoration(
                     color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                child: Column(children: results.map((s) => ListTile(
+                child: Column(children: results.map((r) => ListTile(
                   leading: Container(
                     width: 30, height: 30,
                     decoration: const BoxDecoration(color: Color(0xFFC7EBD8), shape: BoxShape.circle),
                     child: const Icon(Icons.place, color: C.green, size: 16),
                   ),
-                  title: Text(s[0], style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                  subtitle: Text(s[1], style: const TextStyle(fontSize: 11)),
-                  onTap: () => setState(() { picked = '${s[0]}, ${s[1]}'; addr.text = s[0]; }),
+                  title: Text('${r['display_name'] ?? ''}',
+                      maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+                  onTap: () => _selectResult(r),
                 )).toList()),
               ),
             ),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.all(20),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEAF3EC),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: C.border),
-                ),
-                child: Stack(children: [
-                  const Center(child: Icon(Icons.map_outlined, color: Color(0x331F5F4A), size: 90)),
-                  if (picked != null)
-                    Positioned(
-                      left: 12, right: 12, bottom: 12,
-                      child: Container(
-                        padding: const EdgeInsets.all(11),
-                        decoration: BoxDecoration(
-                            color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                        child: Row(children: [
-                          Container(
-                            width: 30, height: 30,
-                            decoration: const BoxDecoration(color: Color(0xFFC25A1F), shape: BoxShape.circle),
-                            child: const Icon(Icons.home, color: Colors.white, size: 15),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text(picked!, style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 12)),
-                            const Text('Distances computed to all universities', style: TextStyle(color: C.muted, fontSize: 10.5)),
-                          ])),
-                        ]),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  decoration: BoxDecoration(border: Border.all(color: C.border), borderRadius: BorderRadius.circular(20)),
+                  child: Stack(children: [
+                    FlutterMap(
+                      mapController: _mapController,
+                      options: MapOptions(
+                        initialCenter: _gasabo,
+                        initialZoom: 13,
+                        onTap: (_, point) => _reverseGeocode(point),
                       ),
+                      children: [
+                        TileLayer(
+                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName: 'com.unimatch.gasabo',
+                        ),
+                        if (pin != null)
+                          MarkerLayer(markers: [
+                            Marker(
+                              point: pin!,
+                              width: 36, height: 36,
+                              child: const Icon(Icons.location_on, color: Color(0xFFC25A1F), size: 36),
+                            ),
+                          ]),
+                      ],
                     ),
-                ]),
+                    if (locating)
+                      const Positioned(top: 12, right: 12,
+                          child: SizedBox(width: 20, height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: C.green))),
+                    if (picked != null)
+                      Positioned(
+                        left: 12, right: 12, bottom: 12,
+                        child: Container(
+                          padding: const EdgeInsets.all(11),
+                          decoration: BoxDecoration(
+                              color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                          child: Row(children: [
+                            Container(
+                              width: 30, height: 30,
+                              decoration: const BoxDecoration(color: Color(0xFFC25A1F), shape: BoxShape.circle),
+                              child: const Icon(Icons.home, color: Colors.white, size: 15),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(child: Text(picked!,
+                                maxLines: 2, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 12))),
+                          ]),
+                        ),
+                      ),
+                  ]),
+                ),
               ),
             ),
           ),
@@ -2481,6 +2869,8 @@ class _LocationScreenState extends State<LocationScreen> {
               child: ElevatedButton.icon(
                 onPressed: () {
                   Session.homeArea = (picked ?? addr.text).trim();
+                  Session.homeLat = pin?.latitude;
+                  Session.homeLng = pin?.longitude;
                   Navigator.push(context, MaterialPageRoute(builder: (_) => ResultsScreen(criteria: widget.criteria)));
                 },
                 icon: const Icon(Icons.bolt, size: 18),
@@ -2519,7 +2909,12 @@ class _ResultsScreenState extends State<ResultsScreen> {
     final wantsReligion = widget.criteria.any((c) => c['code'] == 'C25') &&
         Session.preferredReligion != null && Session.preferredReligion != 'No preference';
     _future = Api.rank(widget.criteria,
-        preferredReligion: wantsReligion ? Session.preferredReligion : null).then((r) async {
+        preferredReligion: wantsReligion ? Session.preferredReligion : null,
+        dept: Session.selectedDept,
+        homeLat: Session.homeLat,
+        homeLng: Session.homeLng,
+        budgetMin: Session.budgetMin,
+        budgetMax: Session.budgetMax).then((r) async {
       Session.lastRanking = r;
       final entries = await Future.wait(r.map((u) async {
         final id = (u as Map)['id'] as String;
@@ -2616,12 +3011,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                               Padding(
                                 padding: const EdgeInsets.fromLTRB(13, 10, 13, 8),
                                 child: Row(children: [
-                                  Container(
-                                    width: 42, height: 42,
-                                    decoration: BoxDecoration(color: crest, borderRadius: BorderRadius.circular(12)),
-                                    alignment: Alignment.center,
-                                    child: Text(abbr, style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700, fontSize: 11)),
-                                  ),
+                                  universityLogo(u, size: 42, radius: 12, fontSize: 11, bg: crest),
                                   const SizedBox(width: 12),
                                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                     Text('${u['name'] ?? ''}', style: TextStyle(
@@ -2724,6 +3114,7 @@ class _DetailScreenState extends State<DetailScreen> {
   Map<String, dynamic> combos = {};
   Map<String, String> labelByCode = {};
   List<Map<String, dynamic>> allCriteria = [];
+  bool showAdditionalDetails = false;
 
   @override
   void initState() {
@@ -2761,64 +3152,38 @@ class _DetailScreenState extends State<DetailScreen> {
         ),
       );
 
-  Widget? _scholarshipCard() {
-    final subs = [
-      MapEntry('Completion', staffAnswers['completion']),
-      MapEntry('Intake', staffAnswers['intake']),
-      MapEntry('Grade', staffAnswers['grade']),
-      MapEntry('Coverage', staffAnswers['coverage']),
-    ].where((e) => e.value is num).toList();
-    if (subs.isEmpty) return null;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Row(children: [
-          Icon(Icons.school_outlined, size: 18, color: C.green),
-          SizedBox(width: 8),
-          Text('Scholarship composite', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-        ]),
-        const SizedBox(height: 12),
-        ...subs.map((e) {
-          final v = (e.value as num).toDouble().clamp(0, 100);
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text(e.key, style: const TextStyle(color: C.ink, fontSize: 12, fontWeight: FontWeight.w600)),
-                Text('${v.toStringAsFixed(0)}%', style: const TextStyle(color: C.muted, fontSize: 11)),
-              ]),
-              const SizedBox(height: 4),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(999),
-                child: LinearProgressIndicator(value: v / 100, minHeight: 6, backgroundColor: C.sand,
-                    valueColor: const AlwaysStoppedAnimation(C.green)),
-              ),
-            ]),
-          );
-        }),
-      ]),
-    );
-  }
-
   Widget? _eligibilityBox() {
     final prog = Session.selectedProgramme;
     if (prog == null) return null;
-    final subs = List<String>.from((combos[prog] as List?) ?? const []);
-    if (subs.length < 2) return null;
-    final pairs = subjectPairs(subs);
+    final raw = combos[prog];
+    if (raw is! Map) return null; // unset, or old pre-combination shape
+    final byCode = <String, List<String>>{};
+    raw.forEach((k, v) {
+      final pairs = subjectPairs(List<String>.from(v as List));
+      if (pairs.isNotEmpty) byCode['$k'] = pairs;
+    });
+    if (byCode.isEmpty) return null;
+    final track = Session.track;
+    final entries = (track != null && byCode.containsKey(track))
+        ? [MapEntry(track, byCode[track]!)]
+        : byCode.entries.toList();
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Principal passes required for $prog', style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink, fontSize: 12.5)),
+        Text(track != null && byCode.containsKey(track)
+                ? 'Your principal passes for $prog ($track)'
+                : 'Principal passes required for $prog',
+            style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink, fontSize: 12.5)),
         const SizedBox(height: 8),
-        Wrap(spacing: 6, runSpacing: 6, children: pairs.map((p) => Container(
+        Wrap(spacing: 6, runSpacing: 6, children: entries
+            .expand((e) => e.value.map((pair) => '${e.key}: $pair'))
+            .map((line) => Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
-              child: Text(p, style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+              child: Text(line,
+                  style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
             )).toList()),
       ]),
     );
@@ -2855,14 +3220,28 @@ class _DetailScreenState extends State<DetailScreen> {
                   }
                   return null;
                 }();
-          final kmHome = vals['C07'];
+          // Real distance only — computed server-side (Haversine) from the
+          // student's picked home location the last time they ranked. No
+          // home location set yet -> blank, never a fabricated number.
+          final kmHome = (Session.homeLat == null || Session.homeLng == null || Session.lastRanking == null)
+              ? null
+              : () {
+                  for (final r in Session.lastRanking!) {
+                    if ((r as Map)['id'] == u['id']) return (r['vals'] as Map?)?['C07'];
+                  }
+                  return null;
+                }();
 
           // Full 26-criteria catalogue, grouped by category, value from vals
           // or staff answers if present, otherwise blank — never fabricated.
           final codeSet = allCriteria.map((c) => c['code']).toSet();
+          // C08 (on-campus accommodation) already has its own dedicated
+          // ACCOMMODATION info card above — don't repeat it in the
+          // categorized breakdown.
+          final displayCriteria = allCriteria.where((c) => c['code'] != 'C08').toList();
           final categories = <String>[];
           final byCategory = <String, List<Map<String, dynamic>>>{};
-          for (final c in allCriteria) {
+          for (final c in displayCriteria) {
             final cat = ((c['category'] as String?)?.trim().isNotEmpty ?? false) ? c['category'] as String : 'General';
             byCategory.putIfAbsent(cat, () { categories.add(cat); return []; }).add(c);
           }
@@ -2891,12 +3270,8 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
-                    Container(
-                      width: 52, height: 52,
-                      decoration: BoxDecoration(color: const Color(0xFFF5E7B8), borderRadius: BorderRadius.circular(13)),
-                      alignment: Alignment.center,
-                      child: Text(abbr, style: TextStyle(color: crest, fontWeight: FontWeight.w700, fontSize: 15)),
-                    ),
+                    universityLogo(u, size: 52, radius: 13, fontSize: 15,
+                        bg: const Color(0xFFF5E7B8), textColor: crest),
                     const SizedBox(width: 12),
                     Expanded(child: Text('${u['name'] ?? widget.name}', style: GoogleFonts.bricolageGrotesque(
                         color: const Color(0xFFFBF8F3), fontSize: 20, fontWeight: FontWeight.w500, height: 1.15))),
@@ -2914,22 +3289,19 @@ class _DetailScreenState extends State<DetailScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              if (staffAnswers['feeMin'] != null || staffAnswers['feeMax'] != null || staffAnswers['accommodation'] != null)
+              if (vals['C01'] != null || staffAnswers['accommodation'] != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 14),
                   child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    if (staffAnswers['feeMin'] != null && staffAnswers['feeMax'] != null)
-                      _infoCard('TUITION RANGE',
-                          '${_fmtRwf((staffAnswers['feeMin'] as num))} – ${_fmtRwf((staffAnswers['feeMax'] as num))}',
-                          Icons.payments_outlined),
-                    if (staffAnswers['feeMin'] != null && staffAnswers['feeMax'] != null && staffAnswers['accommodation'] != null)
+                    if (vals['C01'] != null)
+                      _infoCard('TUITION', _fmtRwf(vals['C01'] as num), Icons.payments_outlined),
+                    if (vals['C01'] != null && staffAnswers['accommodation'] != null)
                       const SizedBox(width: 10),
                     if (staffAnswers['accommodation'] != null)
                       _infoCard('ACCOMMODATION', staffAnswers['accommodation'] == true ? 'On-campus' : 'Off-campus',
                           Icons.home_outlined),
                   ]),
                 ),
-              if (_scholarshipCard() != null) _scholarshipCard()!,
               const Text('Campuses in Gasabo', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
               const SizedBox(height: 10),
               if (campuses.isEmpty)
@@ -2951,10 +3323,10 @@ class _DetailScreenState extends State<DetailScreen> {
               const SizedBox(height: 8),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('All criteria', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-                Text('${allCriteria.length} total', style: const TextStyle(color: C.muted, fontSize: 11)),
+                Text('${displayCriteria.length} total', style: const TextStyle(color: C.muted, fontSize: 11)),
               ]),
               const SizedBox(height: 10),
-              if (allCriteria.isEmpty)
+              if (displayCriteria.isEmpty)
                 const Text('Loading criteria…', style: TextStyle(color: C.muted, fontSize: 12))
               else
                 ...categories.asMap().entries.expand<Widget>((entry) {
@@ -2969,21 +3341,57 @@ class _DetailScreenState extends State<DetailScreen> {
                     ...items.map((c) {
                       final code = c['code'] as String;
                       final value = vals[code] ?? staffAnswers[code];
+                      final names = code == 'C02'
+                          ? List<String>.from(staffAnswers['partnerSchools'] ?? const [])
+                          : code == 'C11'
+                              ? List<String>.from(staffAnswers['companies'] ?? const [])
+                              : const <String>[];
+                      final busKm = code == 'C09' ? staffAnswers['schoolToBusKm'] as num? : null;
+                      final motoKm = code == 'C09' ? staffAnswers['schoolToMotoKm'] as num? : null;
                       return Container(
                         margin: const EdgeInsets.only(bottom: 8),
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
                             color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Expanded(
-                            child: Text('${c['label']}',
-                                style: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
-                          ),
-                          const SizedBox(width: 12),
-                          Flexible(
-                            child: Text(value != null ? _fmtAnswer(value) : '—', textAlign: TextAlign.right,
-                                style: TextStyle(color: value != null ? C.green : C.muted, fontWeight: FontWeight.w700)),
-                          ),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Expanded(
+                              child: Text('${c['label']}',
+                                  style: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
+                            ),
+                            const SizedBox(width: 12),
+                            Flexible(
+                              child: Text(value != null ? _fmtAnswer(value) : '—', textAlign: TextAlign.right,
+                                  style: TextStyle(color: value != null ? C.green : C.muted, fontWeight: FontWeight.w700)),
+                            ),
+                          ]),
+                          if (names.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Wrap(spacing: 6, runSpacing: 6, children: names.map((n) => Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                  child: Text(n, style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                )).toList()),
+                          ],
+                          if (busKm != null || motoKm != null) ...[
+                            const SizedBox(height: 8),
+                            Wrap(spacing: 6, runSpacing: 6, children: [
+                              if (busKm != null)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                  child: Text('Bus stop · ${busKm.toStringAsFixed(2)} km',
+                                      style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                ),
+                              if (motoKm != null)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                  child: Text('Moto stop · ${motoKm.toStringAsFixed(2)} km',
+                                      style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                ),
+                            ]),
+                          ],
                         ]),
                       );
                     }),
@@ -2991,25 +3399,35 @@ class _DetailScreenState extends State<DetailScreen> {
                 }),
               if (contextualRows.isNotEmpty) ...[
                 const SizedBox(height: 20),
-                const Text('Additional details', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-                const SizedBox(height: 10),
-                ...contextualRows.map((e) => Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                          color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Expanded(
-                          child: Text(e.key,
-                              style: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
-                        ),
-                        const SizedBox(width: 12),
-                        Flexible(
-                          child: Text(_fmtAnswer(e.value), textAlign: TextAlign.right,
-                              style: const TextStyle(color: C.green, fontWeight: FontWeight.w700)),
-                        ),
-                      ]),
-                    )),
+                GestureDetector(
+                  onTap: () => setState(() => showAdditionalDetails = !showAdditionalDetails),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(showAdditionalDetails ? 'Hide additional details' : 'Show additional details',
+                        style: const TextStyle(color: C.green, fontWeight: FontWeight.w600, fontSize: 12.5)),
+                    const SizedBox(width: 4),
+                    Icon(showAdditionalDetails ? Icons.expand_less : Icons.expand_more, size: 16, color: C.green),
+                  ]),
+                ),
+                if (showAdditionalDetails) ...[
+                  const SizedBox(height: 10),
+                  ...contextualRows.map((e) => Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                            color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Expanded(
+                            child: Text(e.key,
+                                style: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
+                          ),
+                          const SizedBox(width: 12),
+                          Flexible(
+                            child: Text(_fmtAnswer(e.value), textAlign: TextAlign.right,
+                                style: const TextStyle(color: C.green, fontWeight: FontWeight.w700)),
+                          ),
+                        ]),
+                      )),
+                ],
               ],
               const SizedBox(height: 20),
               Row(children: [
@@ -3096,7 +3514,10 @@ class _DetailScreenState extends State<DetailScreen> {
 /// ===========================================================================
 /// STAFF (university admission staff)
 /// ===========================================================================
-String get _staffUni => Session.uniId ?? 'uni-uok'; // demo fallback if not set
+// No fallback to a real university — an unset uniId should fail requests
+// safely (404/empty state) rather than silently expose or edit someone
+// else's real data.
+String get _staffUni => Session.uniId ?? '';
 
 Drawer staffDrawer(BuildContext context) => Drawer(
       backgroundColor: C.cream,
@@ -3105,8 +3526,7 @@ Drawer staffDrawer(BuildContext context) => Drawer(
           Container(
             width: double.infinity, padding: const EdgeInsets.all(20), color: C.green,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              CircleAvatar(radius: 22, backgroundColor: C.gold,
-                  child: Text(Session.initial, style: const TextStyle(color: C.greenDark, fontWeight: FontWeight.w700))),
+              userAvatar(radius: 22, bg: C.gold, fg: C.greenDark),
               const SizedBox(height: 10),
               Text(Session.name.isEmpty ? 'University staff' : Session.name,
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16)),
@@ -3151,8 +3571,7 @@ Drawer a2Drawer(BuildContext context) => Drawer(
           Container(
             width: double.infinity, padding: const EdgeInsets.all(20), color: C.green,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              CircleAvatar(radius: 22, backgroundColor: C.gold,
-                  child: Text(Session.initial, style: const TextStyle(color: C.greenDark, fontWeight: FontWeight.w700))),
+              userAvatar(radius: 22, bg: C.gold, fg: C.greenDark),
               const SizedBox(height: 10),
               Text(Session.name.isEmpty ? 'A2 graduate' : Session.name,
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16)),
@@ -3258,27 +3677,6 @@ class _StaffDashboardState extends State<StaffDashboard> {
                 const SizedBox(width: 10),
                 _stat('$programmeCount', 'Programmes listed'),
               ]),
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(22),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(22),
-                  gradient: const LinearGradient(
-                      begin: Alignment.topLeft, end: Alignment.bottomRight,
-                      colors: [C.green, Color(0xFF164638)]),
-                ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('YOUR INSTITUTION', style: TextStyle(
-                      fontSize: 10.5, fontWeight: FontWeight.w600, letterSpacing: 1.2, color: C.gold)),
-                  const SizedBox(height: 8),
-                  Text('Keep your profile up to date',
-                      style: head(22, color: const Color(0xFFFBF8F3))),
-                  const SizedBox(height: 6),
-                  const Text('Complete campuses, eligibility combinations and criteria so students can find and rank you.',
-                      style: TextStyle(fontSize: 12.5, color: Color(0xFFCDE3DA), height: 1.5)),
-                ]),
-              ),
             ]),
           ),
           Expanded(
@@ -3287,7 +3685,7 @@ class _StaffDashboardState extends State<StaffDashboard> {
               children: [
                 Text('Manage', style: head(17, weight: FontWeight.w500)),
                 const SizedBox(height: 8),
-                _card(context, 'Campuses & programmes', 'Add a campus, assign departments',
+                _card(context, 'Campuses & programmes', 'Add campuses, departments and programmes',
                     Icons.apartment, const StaffCampusesScreen()),
                 _card(context, 'Eligible combinations', 'Principal-pass combos per programme',
                     Icons.rule, const StaffCombosScreen()),
@@ -3335,6 +3733,7 @@ class StaffCampusesScreen extends StatefulWidget {
 
 class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
   List<Map<String, dynamic>> campuses = [];
+  Map<String, List<String>> programmesByDept = {}; // department -> programme names
   bool loading = true;
 
   @override
@@ -3349,13 +3748,43 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
       final list = (data['campuses'] as List?) ?? [];
       campuses = list.map<Map<String, dynamic>>((c) =>
           {'name': c['name'] ?? '', 'depts': List<String>.from(c['depts'] ?? [])}).toList();
+      final progs = (data['programmes'] as List?) ?? [];
+      programmesByDept = {};
+      for (final p in progs) {
+        final dept = '${(p as Map)['dept'] ?? ''}';
+        if (dept.isEmpty) continue;
+        programmesByDept.putIfAbsent(dept, () => []).add('${p['name'] ?? ''}');
+      }
     } catch (_) {}
     if (mounted) setState(() => loading = false);
   }
 
   Future<void> _save() async {
-    try { await Api.saveStaffCampuses(_staffUni, campuses); if (mounted) toast(context, 'Saved'); }
-    catch (e) { if (mounted) toast(context, e.toString()); }
+    try {
+      final rows = programmesByDept.entries
+          .expand((e) => e.value.map((name) => {'name': name, 'dept': e.key}))
+          .toList();
+      await Future.wait([
+        Api.saveStaffCampuses(_staffUni, campuses),
+        Api.saveStaffProgrammes(_staffUni, rows),
+      ]);
+      if (mounted) toast(context, 'Saved');
+    } catch (e) { if (mounted) toast(context, e.toString()); }
+  }
+
+  Future<String?> _promptText(String label) {
+    final c = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(label),
+        content: TextField(controller: c, autofocus: true, decoration: fieldDeco(label)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('Add')),
+        ],
+      ),
+    );
   }
 
   Future<void> _editCampus({int? index}) async {
@@ -3375,19 +3804,67 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
           const SizedBox(height: 14),
           const Text('Departments offered here', style: TextStyle(color: C.muted, fontSize: 12)),
           const SizedBox(height: 8),
-          Wrap(spacing: 8, runSpacing: 8, children: kDepartments.map((d) {
-            final on = picked.contains(d);
-            return GestureDetector(
-              onTap: () => setSheet(() => on ? picked.remove(d) : picked.add(d)),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                    color: on ? C.green : Colors.white, borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: on ? C.green : C.border)),
-                child: Text(d, style: TextStyle(color: on ? Colors.white : C.ink, fontSize: 12)),
-              ),
-            );
-          }).toList()),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            // Fixed list plus any custom department already picked (e.g. added below) —
+            // so a previously-added custom department still shows as a chip on re-edit.
+            ...{...kDepartments, ...picked}.map((d) {
+              final on = picked.contains(d);
+              return GestureDetector(
+                onTap: () => setSheet(() => on ? picked.remove(d) : picked.add(d)),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                      color: on ? C.green : Colors.white, borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: on ? C.green : C.border)),
+                  child: Text(d, style: TextStyle(color: on ? Colors.white : C.ink, fontSize: 12)),
+                ),
+              );
+            }),
+            ActionChip(
+              avatar: const Icon(Icons.add, size: 14, color: C.green),
+              label: const Text('Add department', style: TextStyle(fontSize: 12, color: C.green)),
+              backgroundColor: Colors.white,
+              side: const BorderSide(color: C.border),
+              onPressed: () async {
+                final v = await _promptText('Department name');
+                if (v != null && v.trim().isNotEmpty) setSheet(() => picked.add(v.trim()));
+              },
+            ),
+          ]),
+          if (picked.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            const Text('Programmes per department', style: TextStyle(color: C.muted, fontSize: 12)),
+            const Text('Leave a department empty and the department name itself is used as its programme.',
+                style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+            const SizedBox(height: 10),
+            ...(picked.toList()..sort()).map((d) {
+              final progs = programmesByDept.putIfAbsent(d, () => []);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(d, style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 12.5)),
+                  const SizedBox(height: 6),
+                  Wrap(spacing: 6, runSpacing: 6, children: [
+                    ...progs.map((name) => Chip(
+                          label: Text(name, style: const TextStyle(fontSize: 12)),
+                          backgroundColor: const Color(0xFFF1EBE0),
+                          onDeleted: () => setSheet(() => progs.remove(name)),
+                        )),
+                    ActionChip(
+                      avatar: const Icon(Icons.add, size: 16, color: C.green),
+                      label: const Text('Add programme', style: TextStyle(fontSize: 12, color: C.green)),
+                      backgroundColor: Colors.white,
+                      side: const BorderSide(color: C.border),
+                      onPressed: () async {
+                        final v = await _promptText('Programme name');
+                        if (v != null && v.trim().isNotEmpty) setSheet(() => progs.add(v.trim()));
+                      },
+                    ),
+                  ]),
+                ]),
+              );
+            }),
+          ],
           const SizedBox(height: 20),
           primaryButton('Save campus', () => Navigator.pop(ctx, true)),
         ]),
@@ -3411,7 +3888,7 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
           : ListView(
               padding: const EdgeInsets.all(20),
               children: [
-                const Text('Add the campuses your university runs in Gasabo, and the departments each one offers.',
+                const Text('Add the campuses your university runs in Gasabo, the departments each one offers, and the programmes under each department.',
                     style: TextStyle(color: C.muted, fontSize: 12.5, height: 1.4)),
                 const SizedBox(height: 14),
                 // dashed add button (matches prototype)
@@ -3517,10 +3994,6 @@ class _DashPainter extends CustomPainter {
 }
 
 /// ---- Staff: eligibility combinations per programme ------------------------
-const List<String> kSubjectPool = [
-  'Physics', 'Maths', 'Chemistry', 'Biology', 'Programming', 'Operating Systems',
-  'Networking', 'System Design', 'Economics', 'Geography', 'History', 'Accounting',
-];
 
 class StaffCombosScreen extends StatefulWidget {
   const StaffCombosScreen({super.key});
@@ -3529,8 +4002,11 @@ class StaffCombosScreen extends StatefulWidget {
 }
 
 class _StaffCombosScreenState extends State<StaffCombosScreen> {
-  Map<String, List<String>> combos = {}; // programme name -> eligible subjects
+  // programme name -> allowed combination code -> subjects that count for it
+  // (any 2 of them together qualify as valid principal passes)
+  Map<String, Map<String, List<String>>> combos = {};
   List<String> programmes = [];
+  Set<String> expanded = {};
   bool loading = true;
 
   @override
@@ -3541,11 +4017,18 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
 
   Future<void> _load() async {
     try {
-      final data = await Api.staffData(_staffUni);
-      final camps = (data['campuses'] as List?) ?? [];
-      programmes = camps.expand((c) => List<String>.from(c['depts'] ?? [])).toSet().toList();
+      final results = await Future.wait([Api.programmes(null), Api.staffData(_staffUni)]);
+      final progs = results[0] as List<dynamic>;
+      final data = results[1] as Map<String, dynamic>;
+      programmes = progs.where((p) => (p as Map)['universityId'] == _staffUni)
+          .map((p) => '${(p as Map)['name']}').toSet().toList();
       final saved = (data['combos'] as Map?) ?? {};
-      combos = { for (final p in programmes) p: List<String>.from(saved[p] ?? const []) };
+      combos = {
+        for (final p in programmes)
+          p: (saved[p] is Map)
+              ? (saved[p] as Map).map((k, v) => MapEntry('$k', List<String>.from(v as List)))
+              : <String, List<String>>{}, // old flat-list shape (or unset) -> starts empty, safe
+      };
     } catch (_) {}
     if (mounted) setState(() => loading = false);
   }
@@ -3553,6 +4036,55 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   Future<void> _save() async {
     try { await Api.saveStaffCombos(_staffUni, combos); if (mounted) toast(context, 'Saved'); }
     catch (e) { if (mounted) toast(context, e.toString()); }
+  }
+
+  Future<String?> _promptText(String label) {
+    final c = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(label),
+        content: TextField(controller: c, autofocus: true, decoration: fieldDeco(label)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('Add')),
+        ],
+      ),
+    );
+  }
+
+  /// Add a subject to a combination that isn't part of its fixed abbreviation
+  /// (e.g. a school may also teach Physics alongside MCB) — added subjects
+  /// count immediately since the only reason to add one is to select it.
+  Future<void> _addSubject(String programme, String code) async {
+    final name = await _promptText('Subject name (e.g. Physics)');
+    if (name == null || name.trim().isEmpty) return;
+    final list = combos[programme]![code] ?? <String>[];
+    if (!list.contains(name.trim())) list.add(name.trim());
+    setState(() => combos[programme]![code] = list);
+    _save();
+  }
+
+  void _toggleAllowed(String programme, String code) {
+    setState(() {
+      if (combos[programme]!.containsKey(code)) {
+        combos[programme]!.remove(code); // no longer eligible with this combination
+      } else {
+        combos[programme]![code] = <String>[]; // eligible; subjects picked next
+      }
+    });
+    _save();
+  }
+
+  void _toggleSubject(String programme, String code, String subject) {
+    final list = combos[programme]![code] ?? <String>[];
+    if (list.contains(subject)) {
+      list.remove(subject);
+    } else {
+      list.add(subject);
+    }
+    setState(() => combos[programme]![code] = list);
+    _save();
   }
 
   @override
@@ -3567,46 +4099,102 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
               : ListView(
                   padding: const EdgeInsets.all(20),
                   children: [
-                    const Text('A student is eligible if they passed any 2 of the highlighted subjects. Every valid pair is listed.',
-                        style: TextStyle(color: C.muted, fontSize: 12)),
+                    const Text('Every A2 graduate studies one fixed combination (e.g. PCB). For each programme, first '
+                        'choose which combinations are allowed to take it — not every combination qualifies for every '
+                        'programme. Then mark which subjects within each allowed combination count: any 2 of them '
+                        'together are accepted as principal passes.',
+                        style: TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
                     const SizedBox(height: 14),
                     ...programmes.map((p) {
-                      final subs = combos[p] ?? [];
-                      final pairs = subjectPairs(subs);
+                      final set = combos[p]!.entries.where((e) => subjectPairs(e.value).isNotEmpty).length;
+                      final isOpen = expanded.contains(p);
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
                             color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(p, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-                          const SizedBox(height: 8),
-                          Wrap(spacing: 6, runSpacing: 6, children: kSubjectPool.map((s) {
-                            final on = subs.contains(s);
-                            return GestureDetector(
-                              onTap: () {
-                                setState(() { on ? subs.remove(s) : subs.add(s); combos[p] = subs; });
-                                _save();
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                decoration: BoxDecoration(
-                                    color: on ? C.green : Colors.white, borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(color: on ? C.green : C.border)),
-                                child: Text(s, style: TextStyle(color: on ? Colors.white : C.ink, fontSize: 11)),
-                              ),
-                            );
-                          }).toList()),
-                          if (pairs.isNotEmpty) ...[
-                            const SizedBox(height: 10),
-                            Text('Possible combinations (${pairs.length})',
-                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: C.muted)),
+                          GestureDetector(
+                            onTap: () => setState(() => isOpen ? expanded.remove(p) : expanded.add(p)),
+                            child: Row(children: [
+                              Expanded(child: Text(p, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink))),
+                              Text('$set combination${set == 1 ? '' : 's'} set',
+                                  style: const TextStyle(fontSize: 11, color: C.muted)),
+                              const SizedBox(width: 6),
+                              Icon(isOpen ? Icons.expand_less : Icons.expand_more, color: C.muted),
+                            ]),
+                          ),
+                          if (isOpen) ...[
+                            const SizedBox(height: 12),
+                            const Text('WHICH COMBINATIONS CAN TAKE THIS PROGRAMME?',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: C.muted, letterSpacing: 0.4)),
                             const SizedBox(height: 6),
-                            Wrap(spacing: 6, runSpacing: 6, children: pairs.map((c) => Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                              decoration: BoxDecoration(color: const Color(0xFFF5E7B8), borderRadius: BorderRadius.circular(999)),
-                              child: Text(c, style: const TextStyle(color: Color(0xFF8A6A10), fontSize: 10, fontWeight: FontWeight.w600)),
-                            )).toList()),
+                            Wrap(spacing: 6, runSpacing: 6, children: kCombinations.map((code) {
+                              final allowed = combos[p]!.containsKey(code);
+                              return GestureDetector(
+                                onTap: () => _toggleAllowed(p, code),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                      color: allowed ? C.greenDark : Colors.white, borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(color: allowed ? C.greenDark : C.border)),
+                                  child: Text(code, style: TextStyle(
+                                      color: allowed ? Colors.white : C.ink, fontSize: 11.5, fontWeight: FontWeight.w600)),
+                                ),
+                              );
+                            }).toList()),
+                            if (combos[p]!.isNotEmpty) ...[
+                              const SizedBox(height: 14),
+                              ...combos[p]!.keys.map((code) {
+                                final chosen = combos[p]![code] ?? const [];
+                                // Fixed abbreviation subjects plus any custom ones staff added for
+                                // this combination (e.g. Physics alongside MCB) — a custom subject
+                                // stays in the pool as long as it's selected.
+                                final subs = [
+                                  ...(kCombinationSubjects[code] ?? const []),
+                                  ...chosen.where((s) => !(kCombinationSubjects[code] ?? const []).contains(s)),
+                                ];
+                                final pairs = subjectPairs(chosen);
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                    Text('$code — pick every subject that counts',
+                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: C.greenDark)),
+                                    const SizedBox(height: 4),
+                                    Wrap(spacing: 6, runSpacing: 6, children: [
+                                      ...subs.map((s) {
+                                        final on = chosen.contains(s);
+                                        return GestureDetector(
+                                          onTap: () => _toggleSubject(p, code, s),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                            decoration: BoxDecoration(
+                                                color: on ? C.green : Colors.white, borderRadius: BorderRadius.circular(999),
+                                                border: Border.all(color: on ? C.green : C.border)),
+                                            child: Text(s, style: TextStyle(color: on ? Colors.white : C.ink, fontSize: 11)),
+                                          ),
+                                        );
+                                      }),
+                                      ActionChip(
+                                        avatar: const Icon(Icons.add, size: 14, color: C.green),
+                                        label: const Text('Add subject', style: TextStyle(fontSize: 11, color: C.green)),
+                                        backgroundColor: Colors.white,
+                                        side: const BorderSide(color: C.border),
+                                        onPressed: () => _addSubject(p, code),
+                                      ),
+                                    ]),
+                                    if (pairs.isNotEmpty) ...[
+                                      const SizedBox(height: 6),
+                                      Wrap(spacing: 6, runSpacing: 6, children: pairs.map((pr) => Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                            child: Text(pr, style: const TextStyle(fontSize: 10.5, color: C.ink, fontWeight: FontWeight.w600)),
+                                          )).toList()),
+                                    ],
+                                  ]),
+                                );
+                              }),
+                            ],
                           ],
                         ]),
                       );
@@ -3632,8 +4220,9 @@ class StaffCriteriaScreen extends StatefulWidget {
 // Codes already covered by a dedicated field/section below (numeric or not) —
 // anything admin-defined outside this set falls through to "Other criteria".
 const Set<String> _coveredCriteriaCodes = {
-  'C01', 'C02', 'C05', 'C07', 'C08', 'C09', 'C11', 'C12', 'C13', 'C14',
-  'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C23', 'C25', 'C26',
+  'C01', 'C02', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10', 'C11', 'C12',
+  'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C23',
+  'C25', 'C26',
 };
 
 class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
@@ -3642,6 +4231,11 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   bool loading = true;
   final _cohortPeriodCtl = TextEditingController();
   final _cohortPctCtl = TextEditingController();
+  final _partnerSchoolCtl = TextEditingController();
+  final _companyCtl = TextEditingController();
+  final _transportMapController = MapController();
+  static const _gasabo = LatLng(-1.9358, 30.0930);
+  String _pinMode = 'school'; // 'school' | 'bus' | 'moto'
 
   @override
   void initState() {
@@ -3667,6 +4261,8 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   void dispose() {
     _cohortPeriodCtl.dispose();
     _cohortPctCtl.dispose();
+    _partnerSchoolCtl.dispose();
+    _companyCtl.dispose();
     super.dispose();
   }
 
@@ -3674,11 +4270,118 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   void _norm() {
     d['partnerSchools'] = List<String>.from(d['partnerSchools'] ?? const []);
     d['companies'] = List<String>.from(d['companies'] ?? const []);
-    d['busStops'] = List<String>.from(d['busStops'] ?? const []);
-    d['motoStops'] = List<String>.from(d['motoStops'] ?? const []);
+    // Pinned {name,lat,lng} entries only — any legacy bare-string stop (from
+    // before map pins existed) is dropped rather than crashing; staff re-pin it.
+    d['busStops'] = _normStops(d['busStops']);
+    d['motoStops'] = _normStops(d['motoStops']);
+    if (d['schoolLocation'] is! Map) d['schoolLocation'] = null;
     d['healthPartners'] = List<String>.from(d['healthPartners'] ?? const []);
     d['cohorts'] = List<Map<String, dynamic>>.from(
         (d['cohorts'] as List?)?.map((e) => Map<String, dynamic>.from(e)) ?? const []);
+  }
+
+  List<Map<String, dynamic>> _normStops(dynamic raw) {
+    if (raw is! List) return [];
+    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e))
+        .where((e) => e['lat'] != null && e['lng'] != null).toList();
+  }
+
+  Future<void> _onTransportMapTap(LatLng p) async {
+    if (_pinMode == 'school') {
+      final label = await reverseGeocodeAddress(p) ?? coordsLabel(p);
+      if (mounted) setState(() => d['schoolLocation'] = {'lat': p.latitude, 'lng': p.longitude, 'label': label});
+    } else {
+      final name = await _promptText(_pinMode == 'bus' ? 'Bus stop name' : 'Moto stop name');
+      if (name == null || name.trim().isEmpty) return;
+      final key = _pinMode == 'bus' ? 'busStops' : 'motoStops';
+      setState(() => (d[key] as List).add({'name': name.trim(), 'lat': p.latitude, 'lng': p.longitude}));
+    }
+  }
+
+  Widget _transportMap() {
+    final markers = <Marker>[];
+    final school = d['schoolLocation'] as Map?;
+    if (school != null) {
+      markers.add(Marker(
+        point: LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble()),
+        width: 34, height: 34,
+        child: const Icon(Icons.school, color: C.greenDark, size: 34),
+      ));
+    }
+    for (final s in (d['busStops'] as List).cast<Map>()) {
+      markers.add(Marker(
+        point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
+        width: 28, height: 28,
+        child: const Icon(Icons.directions_bus, color: Color(0xFF2A5C8F), size: 28),
+      ));
+    }
+    for (final s in (d['motoStops'] as List).cast<Map>()) {
+      markers.add(Marker(
+        point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
+        width: 28, height: 28,
+        child: const Icon(Icons.two_wheeler, color: Color(0xFFC25A1F), size: 28),
+      ));
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: SizedBox(
+        height: 220,
+        child: FlutterMap(
+          mapController: _transportMapController,
+          options: MapOptions(
+            initialCenter: school != null
+                ? LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble())
+                : _gasabo,
+            initialZoom: 13,
+            onTap: (_, point) => _onTransportMapTap(point),
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'com.unimatch.gasabo',
+            ),
+            MarkerLayer(markers: markers),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Live preview only — the authoritative distance is computed and stored
+  /// server-side on save. Null when the school isn't pinned yet, or there
+  /// are no stops of this type yet (never fabricates a distance).
+  double? _nearestKm(String key) {
+    final school = d['schoolLocation'] as Map?;
+    if (school == null) return null;
+    final stops = (d[key] as List).cast<Map>();
+    if (stops.isEmpty) return null;
+    return stops.map((s) => haversineKm(
+        (school['lat'] as num).toDouble(), (school['lng'] as num).toDouble(),
+        (s['lat'] as num).toDouble(), (s['lng'] as num).toDouble())).reduce(math.min);
+  }
+
+  Widget _pinModeChip(String mode, String label, IconData icon, Color color) {
+    final on = _pinMode == mode;
+    return GestureDetector(
+      onTap: () => setState(() => _pinMode = mode),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(999),
+          boxShadow: on ? [BoxShadow(color: color.withValues(alpha: 0.45), blurRadius: 10, offset: const Offset(0, 3))] : null,
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 15, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+          if (on) ...[
+            const SizedBox(width: 4),
+            const Icon(Icons.check_circle, size: 14, color: Colors.white),
+          ],
+        ]),
+      ),
+    );
   }
 
   Future<void> _save() async {
@@ -3715,27 +4418,85 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                 const SizedBox(height: 16),
 
                 _section('C01 · Tuition & fees'),
-                _feeRangeField(),
+                _numField('Tuition (RWF / year)', 'C01'),
 
                 _section('C02 · Scholarships & partner schools'),
-                _scholarshipFields(),
-                _chipEditor('Partner schools (more = higher score)', 'partnerSchools', 'Add a partner school'),
+                const Text('More partner schools raises this criterion\'s score.',
+                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                const SizedBox(height: 10),
+                _numField('Scholarships offered / year', 'C02'),
+                const SizedBox(height: 4),
+                _partnerSchoolsField(),
 
                 _section('C08 · On-campus accommodation'),
                 _yesNo('Available?', 'accommodation'),
 
                 _section('C09 · Transport proximity'),
-                const Text('Mark your locations on the map.',
-                    style: TextStyle(color: C.muted, fontSize: 11)),
-                const SizedBox(height: 8),
-                _pinField('Pin school', 'schoolLocation', Icons.location_on_outlined),
-                _chipEditor('Nearest bus stops', 'busStops', 'Add bus stop'),
-                _chipEditor('Nearest moto stops', 'motoStops', 'Set moto stop'),
-                _numField('Distance from your home (km)', 'C07'),
-
+                const Text('Mark the school location, then any nearby bus and moto stops on the map.',
+                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  _pinModeChip('school', 'Pin school', Icons.location_on, C.greenDark),
+                  _pinModeChip('bus', 'Add bus stop', Icons.directions_bus, const Color(0xFF2A5C8F)),
+                  _pinModeChip('moto', 'Set moto stop', Icons.two_wheeler, const Color(0xFFC25A1F)),
+                ]),
+                const SizedBox(height: 10),
+                _transportMap(),
+                const SizedBox(height: 6),
+                if (d['schoolLocation'] == null)
+                  const Text('Tap "Pin school" to mark the campus on the map.',
+                      style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
+                const SizedBox(height: 6),
+                if (d['schoolLocation'] != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Chip(
+                      avatar: const Icon(Icons.school, size: 15, color: C.greenDark),
+                      label: Text((d['schoolLocation'] as Map)['label'] ?? 'School', style: const TextStyle(fontSize: 12)),
+                      backgroundColor: const Color(0xFFDCEBE3),
+                      onDeleted: () => setState(() => d['schoolLocation'] = null),
+                    ),
+                  ),
+                if (d['schoolLocation'] != null) ...[
+                  Builder(builder: (_) {
+                    final busKm = _nearestKm('busStops');
+                    final motoKm = _nearestKm('motoStops');
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(
+                          busKm != null ? 'Nearest bus stop: ${busKm.toStringAsFixed(2)} km' : 'Nearest bus stop: add a bus stop pin to compute.',
+                          style: TextStyle(fontSize: 11, color: busKm != null ? C.ink : C.muted,
+                              fontStyle: busKm != null ? FontStyle.normal : FontStyle.italic),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          motoKm != null ? 'Nearest moto stop: ${motoKm.toStringAsFixed(2)} km' : 'Nearest moto stop: add a moto stop pin to compute.',
+                          style: TextStyle(fontSize: 11, color: motoKm != null ? C.ink : C.muted,
+                              fontStyle: motoKm != null ? FontStyle.normal : FontStyle.italic),
+                        ),
+                      ]),
+                    );
+                  }),
+                ],
+                Wrap(spacing: 6, runSpacing: 6, children: (d['busStops'] as List).cast<Map>().map((s) => Chip(
+                      avatar: const Icon(Icons.directions_bus, size: 14, color: Color(0xFF2A5C8F)),
+                      label: Text('${s['name']}', style: const TextStyle(fontSize: 12)),
+                      backgroundColor: const Color(0xFFDCE9F2),
+                      onDeleted: () => setState(() => (d['busStops'] as List).remove(s)),
+                    )).toList()),
+                const SizedBox(height: 6),
+                Wrap(spacing: 6, runSpacing: 6, children: (d['motoStops'] as List).cast<Map>().map((s) => Chip(
+                      avatar: const Icon(Icons.two_wheeler, size: 14, color: Color(0xFFC25A1F)),
+                      label: Text('${s['name']}', style: const TextStyle(fontSize: 12)),
+                      backgroundColor: const Color(0xFFF7E4D3),
+                      onDeleted: () => setState(() => (d['motoStops'] as List).remove(s)),
+                    )).toList()),
                 _section('C11 · Internship & industry partners'),
-                _numField('Companies you collaborate with (count)', 'C11'),
-                _chipEditor('Partner companies', 'companies', 'Add a company'),
+                const Text('More partner companies raises this criterion\'s score.',
+                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                const SizedBox(height: 10),
+                _companiesField(),
 
                 _section('C12 · Alumni network strength'),
                 _cohortEditor(),
@@ -3771,6 +4532,11 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                   Expanded(child: _numField('Institution size · C22', 'C22')),
                 ]),
                 _numField('Average class size · C05', 'C05'),
+                Row(children: [
+                  Expanded(child: _numField('Completion rate (%) · C06', 'C06')),
+                  const SizedBox(width: 10),
+                  Expanded(child: _numField('Employment rate (%) · C10', 'C10')),
+                ]),
 
                 _section('C25 · Religious / cultural affiliation'),
                 _yesNo('Religious-based?', 'religiousBased'),
@@ -3817,97 +4583,88 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
         ]),
       );
 
-  void _syncFeeRange() {
-    final min = _n('feeMin'), max = _n('feeMax');
-    if (min != null && max != null) d['C01'] = (min.toDouble() + max.toDouble()) / 2;
-  }
-
-  Widget _feeRangeField() => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Tuition range (RWF / year)', style: TextStyle(color: C.muted, fontSize: 12)),
-          const SizedBox(height: 6),
-          Row(children: [
-            Expanded(child: TextField(
-              controller: TextEditingController(text: _n('feeMin')?.toString() ?? '')
-                ..selection = TextSelection.collapsed(offset: (_n('feeMin')?.toString() ?? '').length),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: fieldDeco('Min'),
-              onChanged: (v) { d['feeMin'] = double.tryParse(v.trim()); _syncFeeRange(); },
-            )),
-            const SizedBox(width: 10),
-            Expanded(child: TextField(
-              controller: TextEditingController(text: _n('feeMax')?.toString() ?? '')
-                ..selection = TextSelection.collapsed(offset: (_n('feeMax')?.toString() ?? '').length),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: fieldDeco('Max'),
-              onChanged: (v) { d['feeMax'] = double.tryParse(v.trim()); _syncFeeRange(); },
-            )),
-          ]),
-        ]),
-      );
-
-  void _syncScholarship() {
-    final vals = ['completion', 'intake', 'grade', 'coverage']
-        .map((k) => _n(k)).where((v) => v != null).cast<num>().toList();
-    if (vals.isNotEmpty) {
-      final avg = vals.fold<double>(0, (s, v) => s + v.toDouble()) / vals.length;
-      d['C02'] = avg / 20; // 0-100% average scaled to a 0-5 scholarship score
-    }
-  }
-
-  Widget _pctField(String label, String key) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
-        const SizedBox(height: 6),
-        TextField(
-          controller: TextEditingController(text: _n(key)?.toString() ?? '')
-            ..selection = TextSelection.collapsed(offset: (_n(key)?.toString() ?? '').length),
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: fieldDeco('0–100'),
-          onChanged: (v) { d[key] = double.tryParse(v.trim()); _syncScholarship(); },
-        ),
-      ]);
-
-  Widget _scholarshipFields() => Padding(
-        padding: const EdgeInsets.only(bottom: 4),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(child: _pctField('Completion %', 'completion')),
-            const SizedBox(width: 10),
-            Expanded(child: _pctField('Intake %', 'intake')),
-          ]),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(child: _pctField('Grade %', 'grade')),
-            const SizedBox(width: 10),
-            Expanded(child: _pctField('Coverage %', 'coverage')),
-          ]),
-          const SizedBox(height: 10),
-        ]),
-      );
-
-  Widget _pinField(String label, String key, IconData icon) {
-    final val = (d[key] ?? '').toString();
+  Widget _partnerSchoolsField() {
+    final list = List<String>.from(d['partnerSchools'] ?? const []);
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
-        if (val.isNotEmpty)
-          Chip(
-            avatar: Icon(icon, size: 15, color: C.green),
-            label: Text(val, style: const TextStyle(fontSize: 12)),
-            backgroundColor: const Color(0xFFF1EBE0),
-            onDeleted: () => setState(() => d[key] = ''),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('PARTNER SCHOOLS (${list.length})', style: const TextStyle(
+            color: C.muted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+        const SizedBox(height: 8),
+        if (list.isNotEmpty) ...[
+          Wrap(spacing: 6, runSpacing: 6, children: list.map((s) => Chip(
+                label: Text(s, style: const TextStyle(fontSize: 12)),
+                backgroundColor: const Color(0xFFDCEBE3),
+                deleteIconColor: C.greenDark,
+                onDeleted: () => setState(() {
+                  (d['partnerSchools'] as List).remove(s);
+                  d['C02'] = (d['partnerSchools'] as List).length;
+                }),
+              )).toList()),
+          const SizedBox(height: 8),
+        ],
+        Row(children: [
+          Expanded(child: TextField(
+            controller: _partnerSchoolCtl,
+            decoration: fieldDeco('Add partner school…'),
+          )),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: const Icon(Icons.add_circle, color: C.green, size: 32),
+            onPressed: () {
+              final v = _partnerSchoolCtl.text.trim();
+              if (v.isEmpty) return;
+              setState(() {
+                (d['partnerSchools'] as List).add(v);
+                d['C02'] = (d['partnerSchools'] as List).length;
+                _partnerSchoolCtl.clear();
+              });
+            },
           ),
-        ActionChip(
-          avatar: Icon(icon, size: 16, color: C.green),
-          label: Text(val.isEmpty ? label : 'Change', style: const TextStyle(fontSize: 12, color: C.green)),
-          backgroundColor: Colors.white,
-          side: const BorderSide(color: C.border),
-          onPressed: () async {
-            final v = await _promptText(label);
-            if (v != null && v.trim().isNotEmpty) setState(() => d[key] = v.trim());
-          },
-        ),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _companiesField() {
+    final list = List<String>.from(d['companies'] ?? const []);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('PARTNER COMPANIES (${list.length})', style: const TextStyle(
+            color: C.muted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+        const SizedBox(height: 8),
+        if (list.isNotEmpty) ...[
+          Wrap(spacing: 6, runSpacing: 6, children: list.map((s) => Chip(
+                label: Text(s, style: const TextStyle(fontSize: 12)),
+                backgroundColor: const Color(0xFFDCE9F2),
+                deleteIconColor: const Color(0xFF2A5C8F),
+                onDeleted: () => setState(() {
+                  (d['companies'] as List).remove(s);
+                  d['C11'] = (d['companies'] as List).length;
+                }),
+              )).toList()),
+          const SizedBox(height: 8),
+        ],
+        Row(children: [
+          Expanded(child: TextField(
+            controller: _companyCtl,
+            decoration: fieldDeco('Add partner company…'),
+          )),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: const Icon(Icons.add_circle, color: C.green, size: 32),
+            onPressed: () {
+              final v = _companyCtl.text.trim();
+              if (v.isEmpty) return;
+              setState(() {
+                (d['companies'] as List).add(v);
+                d['C11'] = (d['companies'] as List).length;
+                _companyCtl.clear();
+              });
+            },
+          ),
+        ]),
       ]),
     );
   }
@@ -4110,6 +4867,13 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
     if (mounted) toast(context, 'Applicants CSV copied (${apps.length} rows)');
   }
 
+  Future<void> _copyHomeAreas(List areas) async {
+    await Clipboard.setData(ClipboardData(text: _toCsv(
+        ['Home area', 'Applicants'],
+        areas.map((a) => [a['home'], a['count']]).toList())));
+    if (mounted) toast(context, 'Reach-by-area CSV copied (${areas.length} rows)');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -4124,19 +4888,29 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
           if (snap.hasError) return _errorView(snap.error.toString());
           final r = snap.data ?? {};
           final apps = (r['applicants'] as List?) ?? [];
+          final areas = (r['homeAreas'] as List?) ?? [];
+          final avgRating = (r['avgRating'] as num?)?.toDouble();
+          final ratingCount = (r['ratingCount'] as num?)?.toInt() ?? 0;
           return ListView(
             padding: const EdgeInsets.all(20),
             children: [
               Row(children: [
                 Expanded(child: _stat('${r['appearedCount'] ?? 0}', 'On students\' lists', C.green)),
                 const SizedBox(width: 10),
-                Expanded(child: _stat('${r['applyCount'] ?? 0}', 'Tapped Apply', const Color(0xFFC25A1F))),
+                Expanded(child: _stat('${r['shortlistCount'] ?? 0}', 'Shortlisted', const Color(0xFF2A5C8F))),
               ]),
-              const SizedBox(height: 18),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(child: _stat('${r['applyCount'] ?? 0}', 'Tapped Apply', const Color(0xFFC25A1F))),
+                const SizedBox(width: 10),
+                Expanded(child: _stat(ratingCount > 0 ? avgRating!.toStringAsFixed(1) : '—',
+                    ratingCount > 0 ? '$ratingCount rating${ratingCount == 1 ? '' : 's'}' : 'No ratings yet', C.gold)),
+              ]),
+              const SizedBox(height: 20),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('Applicants', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
                 TextButton.icon(
-                  onPressed: () => _copyApplicants(apps),
+                  onPressed: apps.isEmpty ? null : () => _copyApplicants(apps),
                   icon: const Icon(Icons.download, size: 16, color: C.green),
                   label: const Text('CSV', style: TextStyle(color: C.green)),
                 ),
@@ -4154,6 +4928,29 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
                         Text(a['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
                         Text('${a['email'] ?? ''} · ${a['home'] ?? ''}',
                             style: const TextStyle(color: C.muted, fontSize: 11)),
+                      ]),
+                    )),
+              const SizedBox(height: 20),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                const Text('Reach by home area', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
+                TextButton.icon(
+                  onPressed: areas.isEmpty ? null : () => _copyHomeAreas(areas),
+                  icon: const Icon(Icons.download, size: 16, color: C.green),
+                  label: const Text('CSV', style: TextStyle(color: C.green)),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              if (areas.isEmpty)
+                const Text('No applicant home areas yet.', style: TextStyle(color: C.muted))
+              else
+                ...areas.map((a) => Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                          color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                      child: Row(children: [
+                        Expanded(child: Text('${a['home']}', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 13))),
+                        Text('${a['count']}', style: const TextStyle(color: C.green, fontWeight: FontWeight.w700)),
                       ]),
                     )),
             ],
@@ -4195,9 +4992,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   Future<void> _load() async {
     try {
-      final unis = await Api.adminUniversities();
-      final staff = await Api.staffRequests();
-      final students = await Api.adminStudents();
+      final results = await Future.wait([Api.adminUniversities(), Api.staffRequests(), Api.adminStudents()]);
+      final unis = results[0], staff = results[1], students = results[2];
       if (!mounted) return;
       setState(() {
         uniCount = unis.length;
@@ -4577,12 +5373,7 @@ class _AdminUniversitiesScreenState extends State<AdminUniversitiesScreen> {
                           decoration: BoxDecoration(
                               color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
                           child: Row(children: [
-                            Container(
-                              width: 44, height: 44,
-                              decoration: BoxDecoration(color: C.uni('${m['abbr']}'), borderRadius: BorderRadius.circular(12)),
-                              alignment: Alignment.center,
-                              child: Text(m['abbr'] ?? '', style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700, fontSize: 12)),
-                            ),
+                            universityLogo(m, size: 44, radius: 12, fontSize: 12),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

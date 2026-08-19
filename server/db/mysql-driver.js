@@ -24,6 +24,7 @@ async function getPool() {
 }
 
 const uid = (p) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
 async function seedIfEmpty() {
   const p = await getPool();
@@ -81,12 +82,15 @@ async function hydrateUniversity(u) {
   let sd = { combos: {}, criteria: {} };
   if (sdRows.length) { try { sd = JSON.parse(sdRows[0].data); } catch { /* fallthrough */ } }
   return {
-    id: u.id, abbr: u.abbr, name: u.name, campuses: camps, vals: map,
+    id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, campuses: camps, vals: map,
     avgRating: rt.avg != null ? Number(Number(rt.avg).toFixed(2)) : null,
     ratingCount: rt.n || 0,
     combos: sd.combos || {},
     religiousBased: !!(sd.criteria && sd.criteria.religiousBased),
     religion: (sd.criteria && sd.criteria.religion) || null,
+    schoolLocation: (sd.criteria && sd.criteria.schoolLocation) || null,
+    busStops: (sd.criteria && Array.isArray(sd.criteria.busStops)) ? sd.criteria.busStops : [],
+    motoStops: (sd.criteria && Array.isArray(sd.criteria.motoStops)) ? sd.criteria.motoStops : [],
   };
 }
 
@@ -101,18 +105,42 @@ module.exports = {
     await seedIfEmpty();
   },
 
-  async createUser({ name, email, password, role, universityId }) {
+  async createUser({ name, email, password, role, universityId, track }) {
     const p = await getPool();
     const [ex] = await p.query('SELECT id FROM users WHERE email=?', [email]);
     if (ex.length) throw new Error('An account with this email already exists');
     const id = uid('user');
-    await p.query('INSERT INTO users (id,name,email,password,role,university_id) VALUES (?,?,?,?,?,?)',
-      [id, name, email, password, role, universityId || null]);
+    await p.query('INSERT INTO users (id,name,email,password,role,university_id,track) VALUES (?,?,?,?,?,?,?)',
+      [id, name, email, password, role, universityId || null, track || null]);
     if (role === 'staff') {
       await p.query('INSERT INTO staff_requests (id,name,email,university_id,status) VALUES (?,?,?,?,?)',
         [uid('req'), name, email, universityId || null, 'pending']);
     }
-    return { id, name, email, role, universityId: universityId || null };
+    return { id, name, email, role, universityId: universityId || null, track: track || null };
+  },
+
+  async updateUser(id, { name, track, photo }) {
+    const p = await getPool();
+    // COALESCE: a field omitted from the request body leaves the stored value untouched.
+    await p.query('UPDATE users SET name=COALESCE(?,name), track=COALESCE(?,track), photo=COALESCE(?,photo) WHERE id=?',
+      [name || null, track || null, photo || null, id]);
+    const [rows] = await p.query('SELECT id,name,track,photo FROM users WHERE id=?', [id]);
+    return rows[0];
+  },
+
+  async setResetOtp(userId, otp, expiresAt) {
+    const p = await getPool();
+    await p.query('UPDATE users SET reset_otp=?, reset_otp_expires=? WHERE id=?', [otp, expiresAt, userId]);
+    return { ok: true };
+  },
+  async resetPassword(email, otp, password) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT id,reset_otp,reset_otp_expires FROM users WHERE email=?', [email]);
+    const u = rows[0];
+    if (!u || !u.reset_otp || u.reset_otp !== otp) throw new Error('Invalid or expired code');
+    if (!u.reset_otp_expires || new Date(u.reset_otp_expires).getTime() < Date.now()) throw new Error('Invalid or expired code');
+    await p.query('UPDATE users SET password=?, reset_otp=NULL, reset_otp_expires=NULL WHERE id=?', [password, u.id]);
+    return { ok: true };
   },
 
   async findUserByEmail(email) {
@@ -139,7 +167,19 @@ module.exports = {
     const [rows] = dept
       ? await p.query('SELECT * FROM programmes WHERE dept=?', [dept])
       : await p.query('SELECT * FROM programmes');
-    return rows;
+    const real = rows.map(r => ({ id: r.id, name: r.name, dept: r.dept, campus: r.campus || '', years: r.years, universityId: r.university_id }));
+    const covered = new Set(real.map(p2 => `${p2.universityId}::${p2.dept}`));
+    const [depts] = dept
+      ? await p.query('SELECT c.university_id, cd.department, c.name AS campus FROM campus_departments cd JOIN campuses c ON c.id=cd.campus_id WHERE cd.department=?', [dept])
+      : await p.query('SELECT c.university_id, cd.department, c.name AS campus FROM campus_departments cd JOIN campuses c ON c.id=cd.campus_id');
+    const synthetic = [];
+    for (const row of depts) {
+      const key = `${row.university_id}::${row.department}`;
+      if (covered.has(key)) continue;
+      covered.add(key);
+      synthetic.push({ id: `dept-${row.university_id}-${slug(row.department)}`, name: row.department, dept: row.department, campus: row.campus, years: null, universityId: row.university_id });
+    }
+    return [...real, ...synthetic];
   },
 
   async listStaffRequests() {
@@ -179,17 +219,20 @@ module.exports = {
     await p.query('INSERT INTO campuses (id,university_id,name) VALUES (?,?,?)', [cid, id, sector || 'Gasabo Campus']);
     return { id, abbr, name, sector };
   },
-  async updateUniversity(id, { abbr, name, sector }) {
+  async updateUniversity(id, { abbr, name, sector, photo }) {
     const p = await getPool();
     if (abbr != null || name != null) {
       await p.query('UPDATE universities SET abbr=COALESCE(?,abbr), name=COALESCE(?,name) WHERE id=?', [abbr, name, id]);
+    }
+    if (photo !== undefined) {
+      await p.query('UPDATE universities SET photo=? WHERE id=?', [photo, id]);
     }
     if (sector != null) {
       const [camps] = await p.query('SELECT id FROM campuses WHERE university_id=? LIMIT 1', [id]);
       if (camps.length) await p.query('UPDATE campuses SET name=? WHERE id=?', [sector, camps[0].id]);
       else await p.query('INSERT INTO campuses (id,university_id,name) VALUES (?,?,?)', [uid('camp'), id, sector]);
     }
-    return { id, abbr, name, sector };
+    return { id, abbr, name, sector, photo };
   },
   async deleteUniversity(id) {
     const p = await getPool();
@@ -271,10 +314,30 @@ module.exports = {
     const d = await this._staffData(uniId); d.combos = combos;
     await this._saveStaffData(uniId, d); return d;
   },
+  async saveStaffProgrammes(uniId, programmes) {
+    const p = await getPool();
+    const d = await this._staffData(uniId); d.programmes = programmes;
+    await this._saveStaffData(uniId, d);
+    await p.query('DELETE FROM programmes WHERE university_id=?', [uniId]);
+    for (const pr of programmes) {
+      await p.query('INSERT INTO programmes (id,name,dept,university_id) VALUES (?,?,?,?)',
+        [uid('prog'), pr.name, pr.dept, uniId]);
+    }
+    return d;
+  },
   async saveStaffCriteria(uniId, criteria) {
     const p = await getPool();
     const d = await this._staffData(uniId); d.criteria = criteria;
     await this._saveStaffData(uniId, d);
+    const keep = new Set(Object.keys(criteria).filter(k => /^C\d+$/.test(k) && typeof criteria[k] === 'number'));
+    // Clear any previously-stored Cxx value whose code dropped out of this
+    // save (e.g. staff removed all bus/moto stops -> C09 must not linger).
+    const [existing] = await p.query('SELECT code FROM criteria_values WHERE university_id=?', [uniId]);
+    for (const row of existing) {
+      if (/^C\d+$/.test(row.code) && !keep.has(row.code)) {
+        await p.query('DELETE FROM criteria_values WHERE university_id=? AND code=?', [uniId, row.code]);
+      }
+    }
     for (const [code, value] of Object.entries(criteria)) {
       if (typeof value !== 'number' || !/^C\d+$/.test(code)) continue;
       await p.query(
@@ -288,10 +351,18 @@ module.exports = {
     const [apps] = await p.query(
       'SELECT a.home_area, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id WHERE a.university_id=?', [uniId]);
     const [[sl]] = await p.query('SELECT COUNT(*) AS n FROM shortlists WHERE university_id=?', [uniId]);
+    const [[rt]] = await p.query('SELECT AVG(stars) AS avg, COUNT(*) AS n FROM ratings WHERE university_id=?', [uniId]);
+    const applicants = apps.map(a => ({ name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '' }));
+    const byHome = {};
+    applicants.forEach(a => { const h = a.home || 'Unknown'; byHome[h] = (byHome[h] || 0) + 1; });
     return {
       appearedCount: (sl.n || 0) + apps.length,
+      shortlistCount: sl.n || 0,
       applyCount: apps.length,
-      applicants: apps.map(a => ({ name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '' })),
+      applicants,
+      homeAreas: Object.entries(byHome).map(([home, count]) => ({ home, count })).sort((a, b) => b.count - a.count),
+      avgRating: rt.avg != null ? Number(Number(rt.avg).toFixed(2)) : null,
+      ratingCount: rt.n || 0,
     };
   },
   async adminReport() {

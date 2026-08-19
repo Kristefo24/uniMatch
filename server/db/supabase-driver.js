@@ -21,6 +21,7 @@ async function getClient() {
 }
 
 const uid = (p) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 // Postgres uses $1,$2… placeholders; helper keeps call sites readable.
 const q = async (text, params = []) => (await getClient()).query(text, params);
 
@@ -74,12 +75,15 @@ async function hydrateUniversity(u) {
   let sd = { combos: {}, criteria: {} };
   if (sdRows.length) { try { sd = JSON.parse(sdRows[0].data); } catch { /* fallthrough */ } }
   return {
-    id: u.id, abbr: u.abbr, name: u.name, campuses: camps, vals: map,
+    id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, campuses: camps, vals: map,
     avgRating: rt[0].avg != null ? Number(rt[0].avg.toFixed(2)) : null,
     ratingCount: rt[0].n || 0,
     combos: sd.combos || {},
     religiousBased: !!(sd.criteria && sd.criteria.religiousBased),
     religion: (sd.criteria && sd.criteria.religion) || null,
+    schoolLocation: (sd.criteria && sd.criteria.schoolLocation) || null,
+    busStops: (sd.criteria && Array.isArray(sd.criteria.busStops)) ? sd.criteria.busStops : [],
+    motoStops: (sd.criteria && Array.isArray(sd.criteria.motoStops)) ? sd.criteria.motoStops : [],
   };
 }
 
@@ -90,17 +94,38 @@ module.exports = {
     await seedIfEmpty();
   },
 
-  async createUser({ name, email, password, role, universityId }) {
+  async createUser({ name, email, password, role, universityId, track }) {
     const { rows: ex } = await q('SELECT id FROM users WHERE lower(email)=lower($1)', [email]);
     if (ex.length) throw new Error('An account with this email already exists');
     const id = uid('user');
-    await q('INSERT INTO users (id,name,email,password,role,university_id) VALUES ($1,$2,$3,$4,$5,$6)',
-      [id, name, email, password, role, universityId || null]);
+    await q('INSERT INTO users (id,name,email,password,role,university_id,track) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [id, name, email, password, role, universityId || null, track || null]);
     if (role === 'staff') {
       await q('INSERT INTO staff_requests (id,name,email,university_id,status) VALUES ($1,$2,$3,$4,$5)',
         [uid('req'), name, email, universityId || null, 'pending']);
     }
-    return { id, name, email, role, universityId: universityId || null };
+    return { id, name, email, role, universityId: universityId || null, track: track || null };
+  },
+
+  async updateUser(id, { name, track, photo }) {
+    // COALESCE: a field omitted from the request body leaves the stored value untouched.
+    const { rows } = await q(
+      'UPDATE users SET name=COALESCE($1,name), track=COALESCE($2,track), photo=COALESCE($3,photo) WHERE id=$4 RETURNING id,name,track,photo',
+      [name || null, track || null, photo || null, id]);
+    return rows[0];
+  },
+
+  async setResetOtp(userId, otp, expiresAt) {
+    await q('UPDATE users SET reset_otp=$1, reset_otp_expires=$2 WHERE id=$3', [otp, expiresAt, userId]);
+    return { ok: true };
+  },
+  async resetPassword(email, otp, password) {
+    const { rows } = await q('SELECT id,reset_otp,reset_otp_expires FROM users WHERE lower(email)=lower($1)', [email]);
+    const u = rows[0];
+    if (!u || !u.reset_otp || u.reset_otp !== otp) throw new Error('Invalid or expired code');
+    if (!u.reset_otp_expires || new Date(u.reset_otp_expires).getTime() < Date.now()) throw new Error('Invalid or expired code');
+    await q('UPDATE users SET password=$1, reset_otp=NULL, reset_otp_expires=NULL WHERE id=$2', [password, u.id]);
+    return { ok: true };
   },
 
   async findUserByEmail(email) {
@@ -123,7 +148,19 @@ module.exports = {
     const { rows } = dept
       ? await q('SELECT * FROM programmes WHERE dept=$1', [dept])
       : await q('SELECT * FROM programmes');
-    return rows.map(r => ({ id: r.id, name: r.name, dept: r.dept, universityId: r.university_id }));
+    const real = rows.map(r => ({ id: r.id, name: r.name, dept: r.dept, campus: r.campus || '', years: r.years, universityId: r.university_id }));
+    const covered = new Set(real.map(p => `${p.universityId}::${p.dept}`));
+    const { rows: depts } = dept
+      ? await q('SELECT c.university_id, cd.department, c.name AS campus FROM campus_departments cd JOIN campuses c ON c.id=cd.campus_id WHERE cd.department=$1', [dept])
+      : await q('SELECT c.university_id, cd.department, c.name AS campus FROM campus_departments cd JOIN campuses c ON c.id=cd.campus_id');
+    const synthetic = [];
+    for (const row of depts) {
+      const key = `${row.university_id}::${row.department}`;
+      if (covered.has(key)) continue;
+      covered.add(key);
+      synthetic.push({ id: `dept-${row.university_id}-${slug(row.department)}`, name: row.department, dept: row.department, campus: row.campus, years: null, universityId: row.university_id });
+    }
+    return [...real, ...synthetic];
   },
 
   async listStaffRequests() {
@@ -155,16 +192,19 @@ module.exports = {
     await q('INSERT INTO campuses (id,university_id,name) VALUES ($1,$2,$3)', [uid('camp'), id, sector || 'Gasabo Campus']);
     return { id, abbr, name, sector };
   },
-  async updateUniversity(id, { abbr, name, sector }) {
+  async updateUniversity(id, { abbr, name, sector, photo }) {
     if (abbr != null || name != null) {
       await q('UPDATE universities SET abbr=COALESCE($1,abbr), name=COALESCE($2,name) WHERE id=$3', [abbr, name, id]);
+    }
+    if (photo !== undefined) {
+      await q('UPDATE universities SET photo=$1 WHERE id=$2', [photo, id]);
     }
     if (sector != null) {
       const { rows } = await q('SELECT id FROM campuses WHERE university_id=$1 LIMIT 1', [id]);
       if (rows.length) await q('UPDATE campuses SET name=$1 WHERE id=$2', [sector, rows[0].id]);
       else await q('INSERT INTO campuses (id,university_id,name) VALUES ($1,$2,$3)', [uid('camp'), id, sector]);
     }
-    return { id, abbr, name, sector };
+    return { id, abbr, name, sector, photo };
   },
   async deleteUniversity(id) {
     await q('DELETE FROM universities WHERE id=$1', [id]);
@@ -234,9 +274,28 @@ module.exports = {
     const d = await this._staffData(uniId); d.combos = combos;
     await this._saveStaffData(uniId, d); return d;
   },
+  async saveStaffProgrammes(uniId, programmes) {
+    const d = await this._staffData(uniId); d.programmes = programmes;
+    await this._saveStaffData(uniId, d);
+    await q('DELETE FROM programmes WHERE university_id=$1', [uniId]);
+    for (const pr of programmes) {
+      await q('INSERT INTO programmes (id,name,dept,university_id) VALUES ($1,$2,$3,$4)',
+        [uid('prog'), pr.name, pr.dept, uniId]);
+    }
+    return d;
+  },
   async saveStaffCriteria(uniId, criteria) {
     const d = await this._staffData(uniId); d.criteria = criteria;
     await this._saveStaffData(uniId, d);
+    const keep = new Set(Object.keys(criteria).filter(k => /^C\d+$/.test(k) && typeof criteria[k] === 'number'));
+    // Clear any previously-stored Cxx value whose code dropped out of this
+    // save (e.g. staff removed all bus/moto stops -> C09 must not linger).
+    const { rows: existing } = await q('SELECT code FROM criteria_values WHERE university_id=$1', [uniId]);
+    for (const row of existing) {
+      if (/^C\d+$/.test(row.code) && !keep.has(row.code)) {
+        await q('DELETE FROM criteria_values WHERE university_id=$1 AND code=$2', [uniId, row.code]);
+      }
+    }
     for (const [code, value] of Object.entries(criteria)) {
       if (typeof value !== 'number' || !/^C\d+$/.test(code)) continue;
       await q('INSERT INTO criteria_values (university_id,code,value) VALUES ($1,$2,$3) ON CONFLICT (university_id,code) DO UPDATE SET value=EXCLUDED.value',
@@ -248,10 +307,18 @@ module.exports = {
     const { rows: apps } = await q(
       'SELECT a.home_area, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id WHERE a.university_id=$1', [uniId]);
     const { rows: sl } = await q('SELECT COUNT(*)::int AS n FROM shortlists WHERE university_id=$1', [uniId]);
+    const { rows: rt } = await q('SELECT AVG(stars)::float AS avg, COUNT(*)::int AS n FROM ratings WHERE university_id=$1', [uniId]);
+    const applicants = apps.map(a => ({ name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '' }));
+    const byHome = {};
+    applicants.forEach(a => { const h = a.home || 'Unknown'; byHome[h] = (byHome[h] || 0) + 1; });
     return {
       appearedCount: (sl[0].n || 0) + apps.length,
+      shortlistCount: sl[0].n || 0,
       applyCount: apps.length,
-      applicants: apps.map(a => ({ name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '' })),
+      applicants,
+      homeAreas: Object.entries(byHome).map(([home, count]) => ({ home, count })).sort((a, b) => b.count - a.count),
+      avgRating: rt[0].avg != null ? Number(rt[0].avg.toFixed(2)) : null,
+      ratingCount: rt[0].n || 0,
     };
   },
   async adminReport() {
