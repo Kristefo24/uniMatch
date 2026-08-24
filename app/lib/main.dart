@@ -8,7 +8,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_map/flutter_map.dart'
-    show FlutterMap, MapController, MapOptions, TileLayer, MarkerLayer, Marker;
+    show FlutterMap, MapController, MapOptions, TileLayer, MarkerLayer, Marker,
+        CameraConstraint, InteractionOptions, InteractiveFlag, LatLngBounds;
 import 'package:latlong2/latlong.dart' show LatLng;
 import 'package:image_picker/image_picker.dart';
 
@@ -4356,8 +4357,13 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   final _partnerSchoolCtl = TextEditingController();
   final _companyCtl = TextEditingController();
   final _transportMapController = MapController();
+  final _popupMapController = MapController();
   static const _gasabo = LatLng(-1.9358, 30.0930);
+  // Generous rectangle covering Gasabo district — a soft UX bound (not a
+  // precise legal boundary) so staff can't pan/zoom the pin map away from it.
+  static final _gasaboBounds = LatLngBounds(const LatLng(-2.05, 29.98), const LatLng(-1.83, 30.23));
   String _pinMode = 'school'; // 'school' | 'bus' | 'moto'
+  Map<String, Map<String, dynamic>> _criteriaByCode = {};
 
   @override
   void initState() {
@@ -4376,8 +4382,9 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
     } catch (_) {}
     try {
       final all = await Api.criteria();
-      otherCriteria = all.map((c) => Map<String, dynamic>.from(c))
-          .where((c) => !_coveredCriteriaCodes.contains(c['code'])).toList();
+      final allCopy = all.map((c) => Map<String, dynamic>.from(c)).toList();
+      _criteriaByCode = {for (final c in allCopy) c['code'] as String: c};
+      otherCriteria = allCopy.where((c) => !_coveredCriteriaCodes.contains(c['code'])).toList();
     } catch (_) {}
     _activeCampus = _campuses.isNotEmpty ? (_campuses[0]['name'] as String) : null;
     _norm();
@@ -4466,9 +4473,9 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
     }
   }
 
-  Widget _transportMap() {
+  List<Marker> _markersFor(Map<String, dynamic> pins) {
     final markers = <Marker>[];
-    final school = _pins['schoolLocation'] as Map?;
+    final school = pins['schoolLocation'] as Map?;
     if (school != null) {
       markers.add(Marker(
         point: LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble()),
@@ -4476,20 +4483,34 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
         child: const Icon(Icons.school, color: C.greenDark, size: 34),
       ));
     }
-    for (final s in (_pins['busStops'] as List).cast<Map>()) {
+    for (final s in (pins['busStops'] as List).cast<Map>()) {
       markers.add(Marker(
         point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
         width: 28, height: 28,
         child: const Icon(Icons.directions_bus, color: Color(0xFF2A5C8F), size: 28),
       ));
     }
-    for (final s in (_pins['motoStops'] as List).cast<Map>()) {
+    for (final s in (pins['motoStops'] as List).cast<Map>()) {
       markers.add(Marker(
         point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
         width: 28, height: 28,
         child: const Icon(Icons.two_wheeler, color: Color(0xFFC25A1F), size: 28),
       ));
     }
+    return markers;
+  }
+
+  LatLng? _schoolPoint(Map<String, dynamic> pins) {
+    final school = pins['schoolLocation'] as Map?;
+    if (school == null) return null;
+    return LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble());
+  }
+
+  /// Preview only — not interactive. Placing pins now happens exclusively in
+  /// the full-screen popup (_openPinPopup), which gives staff a much larger
+  /// view to tap precisely instead of this small embedded map.
+  Widget _transportMap() {
+    final school = _schoolPoint(_pins);
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
       child: SizedBox(
@@ -4498,22 +4519,58 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
           key: ValueKey(_activeCampus),
           mapController: _transportMapController,
           options: MapOptions(
-            initialCenter: school != null
-                ? LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble())
-                : _gasabo,
+            initialCenter: school ?? _gasabo,
             initialZoom: 13,
-            onTap: (_, point) => _onTransportMapTap(point),
+            interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
+            cameraConstraint: CameraConstraint.contain(bounds: _gasaboBounds),
+            minZoom: 11,
           ),
           children: [
             TileLayer(
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.unimatch.gasabo',
             ),
-            MarkerLayer(markers: markers),
+            MarkerLayer(markers: _markersFor(_pins)),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _openPinPopup(String mode) async {
+    setState(() => _pinMode = mode);
+    final campusLabel = _activeCampus ?? '';
+    final modeLabel = mode == 'school' ? 'Pin school' : (mode == 'bus' ? 'Add bus stop' : 'Set moto stop');
+    final school = _schoolPoint(_pins);
+    await Navigator.push(context, MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (popupCtx) => Scaffold(
+        appBar: AppBar(
+          backgroundColor: C.green, foregroundColor: Colors.white,
+          title: Text('$modeLabel — $campusLabel', style: const TextStyle(fontSize: 16)),
+        ),
+        body: FlutterMap(
+          mapController: _popupMapController,
+          options: MapOptions(
+            initialCenter: school ?? _gasabo,
+            initialZoom: 15,
+            cameraConstraint: CameraConstraint.contain(bounds: _gasaboBounds),
+            minZoom: 11,
+            onTap: (_, point) async {
+              await _onTransportMapTap(point);
+              if (popupCtx.mounted) Navigator.pop(popupCtx);
+            },
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'com.unimatch.gasabo',
+            ),
+            MarkerLayer(markers: _markersFor(_pins)),
+          ],
+        ),
+      ),
+    ));
   }
 
   /// Live preview only — the authoritative distance is computed and stored
@@ -4529,10 +4586,12 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
         (s['lat'] as num).toDouble(), (s['lng'] as num).toDouble())).reduce(math.min);
   }
 
+  // Tapping opens the full-screen pin popup directly in this mode — placing
+  // pins no longer happens on the small inline map.
   Widget _pinModeChip(String mode, String label, IconData icon, Color color) {
     final on = _pinMode == mode;
     return GestureDetector(
-      onTap: () => setState(() => _pinMode = mode),
+      onTap: () => _openPinPopup(mode),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
@@ -4602,9 +4661,66 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
     }
   }
 
+  // Every criterion a graduate can actually be ranked on must be filled —
+  // C07 (server-computed from home distance) and the auto codes (C03/C04/C24,
+  // never staff-entered) are the only exceptions.
+  Set<String> get _requiredCriteriaCodes => {
+        ..._coveredCriteriaCodes.where((c) => c != 'C07'),
+        ...otherCriteria
+            .where((c) => !_autoCriteriaCodes.contains(c['code']))
+            .map((c) => c['code'] as String),
+      };
+
+  String _labelFor(String code) => _criteriaByCode[code]?['label'] ?? code;
+
+  List<String> _validate() {
+    final missing = <String>[];
+    for (final code in _requiredCriteriaCodes) {
+      if (code == 'C09') continue; // checked per-campus below
+      if (d[code] is! num) missing.add('${_labelFor(code)} · $code');
+    }
+    for (final c in _campuses) {
+      final name = c['name'] as String;
+      final pins = (d['campusPins'] as Map)[name] as Map?;
+      if (pins == null || pins['schoolLocation'] == null) {
+        missing.add('C09 · Transport proximity ($name)');
+      }
+    }
+    if (d['religiousBased'] == true && d['religion'] == null) {
+      missing.add('C25 · Religious / cultural affiliation (select a religion)');
+    }
+    if (d['health'] == true && List.from(d['healthPartners'] ?? const []).isEmpty) {
+      missing.add('C17 · Health / medical services (add at least one partner)');
+    }
+    return missing;
+  }
+
+  Future<void> _showMissingFieldsDialog(List<String> missing) => showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('A few fields are still missing'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: missing.map((m) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Text('•  $m', style: const TextStyle(fontSize: 13)),
+                  )).toList(),
+            ),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+        ),
+      );
+
   Future<void> _save() async {
     try {
       _deriveNumericCriteria();
+      final missing = _validate();
+      if (missing.isNotEmpty) {
+        await _showMissingFieldsDialog(missing);
+        return;
+      }
       await Api.saveStaffCriteria(_staffUni, d);
       if (!mounted) return;
       toast(context, 'Criteria saved');
@@ -4703,13 +4819,20 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                     );
                   }).toList()),
                   const SizedBox(height: 12),
-                  Wrap(spacing: 8, runSpacing: 8, children: [
-                    _pinModeChip('school', 'Pin school', Icons.location_on, C.greenDark),
-                    _pinModeChip('bus', 'Add bus stop', Icons.directions_bus, const Color(0xFF2A5C8F)),
-                    _pinModeChip('moto', 'Set moto stop', Icons.two_wheeler, const Color(0xFFC25A1F)),
+                  const Text('Tap a button to open a full-screen map and place that pin.',
+                      style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                  const SizedBox(height: 8),
+                  Stack(children: [
+                    _transportMap(),
+                    Positioned(
+                      left: 10, right: 10, bottom: 10,
+                      child: Wrap(spacing: 8, runSpacing: 8, children: [
+                        _pinModeChip('school', 'Pin school', Icons.location_on, C.greenDark),
+                        _pinModeChip('bus', 'Add bus stop', Icons.directions_bus, const Color(0xFF2A5C8F)),
+                        _pinModeChip('moto', 'Set moto stop', Icons.two_wheeler, const Color(0xFFC25A1F)),
+                      ]),
+                    ),
                   ]),
-                  const SizedBox(height: 10),
-                  _transportMap(),
                   const SizedBox(height: 6),
                   if (_pins['schoolLocation'] == null)
                     const Text('Tap "Pin school" to mark this campus on the map.',
@@ -4825,7 +4948,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
 
                 if (otherCriteria.isNotEmpty) ...[
                   _section('Other criteria'),
-                  const Text('These criteria don\'t have a dedicated field yet — enter a number if you have one.',
+                  const Text('These criteria don\'t have a dedicated field yet — enter a number for each.',
                       style: TextStyle(color: C.muted, fontSize: 11)),
                   const SizedBox(height: 8),
                   ...otherCriteria.map((c) => _autoCriteriaCodes.contains(c['code'])
