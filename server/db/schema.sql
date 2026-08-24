@@ -59,8 +59,10 @@ CREATE TABLE IF NOT EXISTS programmes (
   id             VARCHAR(64) PRIMARY KEY,
   name           VARCHAR(160) NOT NULL,
   dept           VARCHAR(120) NOT NULL,
-  university_id  VARCHAR(64) NOT NULL
+  university_id  VARCHAR(64) NOT NULL,
+  campus         VARCHAR(200)
 );
+ALTER TABLE programmes ADD COLUMN IF NOT EXISTS campus VARCHAR(200);
 
 -- One row per (university, criterion). code = C01..C26, value is numeric.
 CREATE TABLE IF NOT EXISTS criteria_values (

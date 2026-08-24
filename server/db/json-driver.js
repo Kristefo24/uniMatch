@@ -48,6 +48,7 @@ function staffExtras(uniId) {
     schoolLocation: c.schoolLocation || null,
     busStops: Array.isArray(c.busStops) ? c.busStops : [],
     motoStops: Array.isArray(c.motoStops) ? c.motoStops : [],
+    campusPins: (c.campusPins && typeof c.campusPins === 'object') ? c.campusPins : {},
   };
 }
 

@@ -121,10 +121,11 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
   // the department at all.
   let deptEligibleIds = null;
   let exactProgrammeIds = null;
+  let deptProgs = null;
   if (dept) {
-    const progs = await db.listProgrammes(dept);
-    deptEligibleIds = new Set(progs.map(p => p.universityId));
-    if (programme) exactProgrammeIds = new Set(progs.filter(p => p.name === programme).map(p => p.universityId));
+    deptProgs = await db.listProgrammes(dept);
+    deptEligibleIds = new Set(deptProgs.map(p => p.universityId));
+    if (programme) exactProgrammeIds = new Set(deptProgs.filter(p => p.name === programme).map(p => p.universityId));
   }
   // Binary religion/culture match (PRD C25): only overridden when the student
   // actually picked a preference — otherwise C25 keeps whatever (if any)
@@ -135,19 +136,54 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
       vals: { ...(u.vals || {}), C25: (u.religiousBased && u.religion === preferredReligion) ? 1 : 0 },
     }));
   }
-  // C07: real straight-line distance from the student's picked home location
-  // to the university's own pinned location. No schoolLocation set -> leave
-  // whatever static value staff already entered.
-  if (homeLat != null && homeLng != null) {
-    unis = unis.map(u => {
-      if (!u.schoolLocation) return u;
-      const km = haversineKm(homeLat, homeLng, u.schoolLocation.lat, u.schoolLocation.lng);
-      return { ...u, vals: { ...(u.vals || {}), C07: km } };
-    });
-    // C09 is no longer derived from the student's home here — it's the
-    // campus-to-transport distance staff already computed and persisted in
-    // PUT /staff/:uniId/criteria, so it flows through u.vals.C09 unmodified.
-  }
+  // C07/C09: resolve which campus of each university is actually relevant to
+  // this graduate's chosen dept/programme, then use THAT campus's pins —
+  // never a different campus's. Exact programme picked -> that programme's
+  // own campus, always. Dept only, offered at multiple campuses -> nearest
+  // campus to the graduate's home. No dept context or no pins yet -> fall
+  // back to the university-wide legacy pin / whatever static value staff
+  // already entered.
+  const resolveCampusForUni = (u) => {
+    if (programme && dept) {
+      const exact = (deptProgs || []).find(p => p.universityId === u.id && p.name === programme && p.campus);
+      if (exact) return exact.campus;
+    }
+    if (dept && Array.isArray(u.campuses) && u.campuses.length) {
+      const offering = u.campuses.filter(c => Array.isArray(c.depts) && c.depts.includes(dept));
+      if (offering.length === 1) return offering[0].name;
+      if (offering.length > 1) {
+        if (homeLat != null && homeLng != null) {
+          let best = null, bestKm = Infinity;
+          for (const c of offering) {
+            const pin = (u.campusPins || {})[c.name];
+            if (!pin || !pin.schoolLocation) continue;
+            const km = haversineKm(homeLat, homeLng, pin.schoolLocation.lat, pin.schoolLocation.lng);
+            if (km < bestKm) { bestKm = km; best = c.name; }
+          }
+          if (best) return best;
+        }
+        return offering[0].name;
+      }
+    }
+    return null;
+  };
+  unis = unis.map(u => {
+    const campusName = resolveCampusForUni(u);
+    const pin = campusName ? (u.campusPins || {})[campusName] : null;
+    let vals = u.vals || {};
+    let changed = false;
+    if (pin && pin.C09 != null) { vals = { ...vals, C09: pin.C09 }; changed = true; }
+    if (homeLat != null && homeLng != null) {
+      if (pin && pin.schoolLocation) {
+        vals = { ...vals, C07: haversineKm(homeLat, homeLng, pin.schoolLocation.lat, pin.schoolLocation.lng) };
+        changed = true;
+      } else if (u.schoolLocation) {
+        vals = { ...vals, C07: haversineKm(homeLat, homeLng, u.schoolLocation.lat, u.schoolLocation.lng) };
+        changed = true;
+      }
+    }
+    return changed ? { ...u, vals } : u;
+  });
   // C01: budget-range fit. In range -> best possible cost value (0); outside
   // -> distance to the nearest edge of the range (still smaller = better).
   if (budgetMin != null || budgetMax != null) {
@@ -246,24 +282,38 @@ app.put('/staff/:uniId/combos', auth(), requireStaffOfUniversity(), wrap(async (
 app.put('/staff/:uniId/criteria', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   const criteria = { ...((req.body && req.body.criteria) || {}) };
   // C09: intrinsic campus-to-transport proximity — derived purely from the
-  // school/bus/moto pins staff place on the map, never typed in manually.
-  // Recomputed in full on every save so a removed pin never leaves a stale
-  // distance behind.
+  // school/bus/moto pins staff place on the map, per campus, never typed in
+  // manually. Recomputed in full on every save so a removed pin never
+  // leaves a stale distance behind. criteria.C09 (top-level) is kept as a
+  // university-wide fallback = the best (lowest) C09 across all campuses,
+  // for any code path that isn't campus-aware.
   delete criteria.schoolToBusKm;
   delete criteria.schoolToMotoKm;
   delete criteria.C09;
-  const school = criteria.schoolLocation;
-  const busStops = Array.isArray(criteria.busStops) ? criteria.busStops : [];
-  const motoStops = Array.isArray(criteria.motoStops) ? criteria.motoStops : [];
-  if (school && school.lat != null && school.lng != null) {
-    const nearestKm = stops => stops.length
-      ? Math.min(...stops.map(s => haversineKm(school.lat, school.lng, s.lat, s.lng))) : null;
-    const busKm = nearestKm(busStops), motoKm = nearestKm(motoStops);
-    if (busKm != null) criteria.schoolToBusKm = Number(busKm.toFixed(2));
-    if (motoKm != null) criteria.schoolToMotoKm = Number(motoKm.toFixed(2));
-    const candidates = [busKm, motoKm].filter(v => v != null);
-    if (candidates.length) criteria.C09 = Number(Math.min(...candidates).toFixed(2));
+  const campusPins = (criteria.campusPins && typeof criteria.campusPins === 'object') ? criteria.campusPins : {};
+  const resolvedPins = {};
+  let bestC09 = null;
+  for (const [campusName, p] of Object.entries(campusPins)) {
+    const pin = { ...(p || {}) };
+    const school = pin.schoolLocation;
+    const busStops = Array.isArray(pin.busStops) ? pin.busStops : [];
+    const motoStops = Array.isArray(pin.motoStops) ? pin.motoStops : [];
+    if (school && school.lat != null && school.lng != null) {
+      const nearestKm = stops => stops.length
+        ? Math.min(...stops.map(s => haversineKm(school.lat, school.lng, s.lat, s.lng))) : null;
+      const busKm = nearestKm(busStops), motoKm = nearestKm(motoStops);
+      if (busKm != null) pin.schoolToBusKm = Number(busKm.toFixed(2));
+      if (motoKm != null) pin.schoolToMotoKm = Number(motoKm.toFixed(2));
+      const candidates = [busKm, motoKm].filter(v => v != null);
+      if (candidates.length) {
+        pin.C09 = Number(Math.min(...candidates).toFixed(2));
+        bestC09 = bestC09 == null ? pin.C09 : Math.min(bestC09, pin.C09);
+      }
+    }
+    resolvedPins[campusName] = pin;
   }
+  criteria.campusPins = resolvedPins;
+  if (bestC09 != null) criteria.C09 = bestC09;
   res.json(await db.saveStaffCriteria(req.params.uniId, criteria));
 }));
 app.put('/staff/:uniId/programmes', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {

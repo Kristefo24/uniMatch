@@ -3707,6 +3707,10 @@ class _StaffDashboardState extends State<StaffDashboard> {
   @override
   void initState() {
     super.initState();
+    _load();
+  }
+
+  void _load() {
     final uniId = Session.uniId;
     if (uniId != null) {
       Api.university(uniId).then((u) {
@@ -3772,7 +3776,7 @@ class _StaffDashboardState extends State<StaffDashboard> {
                 Text('Manage', style: head(17, weight: FontWeight.w500)),
                 const SizedBox(height: 8),
                 _card(context, 'Campuses & programmes', 'Add campuses, departments and programmes',
-                    Icons.apartment, const StaffCampusesScreen()),
+                    Icons.apartment, const StaffCampusesScreen(), onReturn: _load),
                 _card(context, 'Eligible combinations', 'Principal-pass combos per programme',
                     Icons.rule, const StaffCombosScreen()),
                 _card(context, 'Criteria answers', 'Fill in your 26 data points',
@@ -3787,8 +3791,8 @@ class _StaffDashboardState extends State<StaffDashboard> {
     );
   }
 
-  Widget _card(BuildContext ctx, String t, String s, IconData i, Widget dest) => GestureDetector(
-        onTap: () => Navigator.push(ctx, MaterialPageRoute(builder: (_) => dest)),
+  Widget _card(BuildContext ctx, String t, String s, IconData i, Widget dest, {VoidCallback? onReturn}) => GestureDetector(
+        onTap: () => Navigator.push(ctx, MaterialPageRoute(builder: (_) => dest)).then((_) => onReturn?.call()),
         child: Container(
           margin: const EdgeInsets.only(bottom: 10),
           padding: const EdgeInsets.all(16),
@@ -3819,7 +3823,10 @@ class StaffCampusesScreen extends StatefulWidget {
 
 class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
   List<Map<String, dynamic>> campuses = [];
-  Map<String, List<String>> programmesByDept = {}; // department -> programme names
+  // Flat list of {name, dept, campus} — each programme belongs to exactly
+  // one campus, so ranking can tell "Computing, IT & Engineering at Remera"
+  // apart from the same department at Main Campus.
+  List<Map<String, dynamic>> allProgrammes = [];
   bool loading = true;
 
   @override
@@ -3835,20 +3842,19 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
       campuses = list.map<Map<String, dynamic>>((c) =>
           {'name': c['name'] ?? '', 'depts': List<String>.from(c['depts'] ?? [])}).toList();
       final progs = (data['programmes'] as List?) ?? [];
-      programmesByDept = {};
-      for (final p in progs) {
-        final dept = '${(p as Map)['dept'] ?? ''}';
-        if (dept.isEmpty) continue;
-        programmesByDept.putIfAbsent(dept, () => []).add('${p['name'] ?? ''}');
-      }
+      allProgrammes = progs.map<Map<String, dynamic>>((p) => {
+            'name': '${(p as Map)['name'] ?? ''}',
+            'dept': '${p['dept'] ?? ''}',
+            'campus': '${p['campus'] ?? ''}',
+          }).where((p) => (p['dept'] as String).isNotEmpty).toList();
     } catch (_) {}
     if (mounted) setState(() => loading = false);
   }
 
   Future<void> _save() async {
     try {
-      final rows = programmesByDept.entries
-          .expand((e) => e.value.map((name) => {'name': name, 'dept': e.key}))
+      final rows = allProgrammes
+          .map((p) => {'name': p['name'], 'dept': p['dept'], 'campus': p['campus']})
           .toList();
       await Future.wait([
         Api.saveStaffCampuses(_staffUni, campuses),
@@ -3875,8 +3881,17 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
 
   Future<void> _editCampus({int? index}) async {
     final existing = index != null ? campuses[index] : null;
+    final oldName = existing?['name'] as String?;
     final name = TextEditingController(text: existing?['name'] ?? '');
     final picked = Set<String>.from(existing?['depts'] ?? const <String>[]);
+    // Scoped to THIS campus only — editing Remera's programmes never touches
+    // Main Campus's, even if both offer the same department.
+    final localProgs = <String, List<String>>{};
+    if (oldName != null) {
+      for (final p in allProgrammes.where((p) => p['campus'] == oldName)) {
+        localProgs.putIfAbsent(p['dept'] as String, () => []).add(p['name'] as String);
+      }
+    }
     final saved = await showModalBottomSheet<bool>(
       context: context, isScrollControlled: true, backgroundColor: C.cream,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
@@ -3887,6 +3902,11 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
           const SizedBox(height: 16),
           TextField(controller: name, decoration: fieldDeco('Campus name (e.g. Remera Campus)')),
+          if (existing != null) ...[
+            const SizedBox(height: 6),
+            const Text('Renaming clears this campus\'s saved map pins (school/bus/moto) — re-place them under Criteria answers afterwards.',
+                style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic, height: 1.3)),
+          ],
           const SizedBox(height: 14),
           const Text('Departments offered here', style: TextStyle(color: C.muted, fontSize: 12)),
           const SizedBox(height: 8),
@@ -3914,7 +3934,7 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
                 style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
             const SizedBox(height: 10),
             ...(picked.toList()..sort()).map((d) {
-              final progs = programmesByDept.putIfAbsent(d, () => []);
+              final progs = localProgs.putIfAbsent(d, () => []);
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -3947,9 +3967,18 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
       )),
     );
     if (saved != true) return;
+    final newName = name.text.trim();
     setState(() {
-      final row = {'name': name.text.trim(), 'depts': picked.toList()};
+      final row = {'name': newName, 'depts': picked.toList()};
       if (index != null) campuses[index] = row; else campuses.add(row);
+      // Replace this campus's programme rows with whatever the sheet ended
+      // up with, retagged to the (possibly renamed) campus.
+      if (oldName != null) allProgrammes.removeWhere((p) => p['campus'] == oldName);
+      for (final d in picked) {
+        for (final pname in (localProgs[d] ?? const <String>[])) {
+          allProgrammes.add({'name': pname, 'dept': d, 'campus': newName});
+        }
+      }
     });
     _save();
   }
@@ -4010,7 +4039,14 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
                           const SizedBox(width: 14),
                           IconButton(padding: EdgeInsets.zero, constraints: const BoxConstraints(),
                               icon: const Icon(Icons.delete_outline, color: Color(0xFFC25A1F), size: 19),
-                              onPressed: () { setState(() => campuses.removeAt(i)); _save(); }),
+                              onPressed: () {
+                                setState(() {
+                                  final removedName = campuses[i]['name'];
+                                  campuses.removeAt(i);
+                                  allProgrammes.removeWhere((p) => p['campus'] == removedName);
+                                });
+                                _save();
+                              }),
                         ]),
                         const SizedBox(height: 10),
                         Text('${depts.length} department${depts.length == 1 ? '' : 's'}',
@@ -4297,14 +4333,24 @@ class StaffCriteriaScreen extends StatefulWidget {
 // anything admin-defined outside this set falls through to "Other criteria".
 const Set<String> _coveredCriteriaCodes = {
   'C01', 'C02', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10', 'C11', 'C12',
-  'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C23',
+  'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C21', 'C22', 'C23',
   'C25', 'C26',
 };
+
+// These are recognized criteria but are never staff-entered numbers — C03
+// (programme availability) and C24 (subject combinations) come from the
+// programme/combo data staff already enters elsewhere, and C04 (faculty
+// qualifications) isn't collected at all. Shown so staff can see they're
+// accounted for, but with no fillable box.
+const Set<String> _autoCriteriaCodes = {'C03', 'C04', 'C24'};
 
 class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   Map<String, dynamic> d = {};
   List<Map<String, dynamic>> otherCriteria = [];
   bool loading = true;
+  List<Map<String, dynamic>> _campuses = [];
+  String? _activeCampus;
+  bool _hasProgrammes = false;
   final _cohortPeriodCtl = TextEditingController();
   final _cohortPctCtl = TextEditingController();
   final _partnerSchoolCtl = TextEditingController();
@@ -4323,12 +4369,17 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
     try {
       final data = await Api.staffData(_staffUni);
       d = Map<String, dynamic>.from((data['criteria'] as Map?) ?? {});
+      final list = (data['campuses'] as List?) ?? [];
+      _campuses = list.map<Map<String, dynamic>>((c) =>
+          {'name': c['name'] ?? '', 'depts': List<String>.from(c['depts'] ?? [])}).toList();
+      _hasProgrammes = ((data['programmes'] as List?) ?? []).isNotEmpty;
     } catch (_) {}
     try {
       final all = await Api.criteria();
       otherCriteria = all.map((c) => Map<String, dynamic>.from(c))
           .where((c) => !_coveredCriteriaCodes.contains(c['code'])).toList();
     } catch (_) {}
+    _activeCampus = _campuses.isNotEmpty ? (_campuses[0]['name'] as String) : null;
     _norm();
     if (mounted) setState(() => loading = false);
   }
@@ -4346,15 +4397,56 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   void _norm() {
     d['partnerSchools'] = List<String>.from(d['partnerSchools'] ?? const []);
     d['companies'] = List<String>.from(d['companies'] ?? const []);
-    // Pinned {name,lat,lng} entries only — any legacy bare-string stop (from
-    // before map pins existed) is dropped rather than crashing; staff re-pin it.
-    d['busStops'] = _normStops(d['busStops']);
-    d['motoStops'] = _normStops(d['motoStops']);
-    if (d['schoolLocation'] is! Map) d['schoolLocation'] = null;
     d['healthPartners'] = List<String>.from(d['healthPartners'] ?? const []);
     d['cohorts'] = List<Map<String, dynamic>>.from(
         (d['cohorts'] as List?)?.map((e) => Map<String, dynamic>.from(e)) ?? const []);
+    _normCampusPins();
   }
+
+  // Transport pins now live per campus: d['campusPins'][campusName] = {
+  //   schoolLocation, busStops, motoStops }. One-time migration: an older
+  // single university-wide pin set gets copied into the (only) campus it
+  // could belong to. With 2+ campuses it's ambiguous which one the old pins
+  // were for, so they're left untouched (unused, harmless) and staff just
+  // re-pin each campus fresh.
+  void _normCampusPins() {
+    final raw = d['campusPins'];
+    d['campusPins'] = (raw is Map) ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final pins = d['campusPins'] as Map<String, dynamic>;
+    final legacySchool = d['schoolLocation'];
+    final legacyBus = _normStops(d['busStops']);
+    final legacyMoto = _normStops(d['motoStops']);
+    final hasLegacy = legacySchool is Map || legacyBus.isNotEmpty || legacyMoto.isNotEmpty;
+    if (hasLegacy && pins.isEmpty && _campuses.length == 1) {
+      final name = _campuses[0]['name'] as String;
+      pins[name] = {'schoolLocation': legacySchool, 'busStops': legacyBus, 'motoStops': legacyMoto};
+      d.remove('schoolLocation');
+      d.remove('busStops');
+      d.remove('motoStops');
+    }
+    for (final c in _campuses) {
+      final name = c['name'] as String;
+      final p = (pins[name] is Map) ? Map<String, dynamic>.from(pins[name]) : <String, dynamic>{};
+      p['schoolLocation'] = p['schoolLocation'] is Map ? p['schoolLocation'] : null;
+      p['busStops'] = _normStops(p['busStops']);
+      p['motoStops'] = _normStops(p['motoStops']);
+      pins[name] = p;
+    }
+  }
+
+  // Live reference into d['campusPins'][activeCampus] — mutating the
+  // returned map (as the existing pin-editing code does throughout) writes
+  // straight through to `d`, same as the old flat d['schoolLocation'] did.
+  Map<String, dynamic> get _pins {
+    final pins = d['campusPins'] as Map<String, dynamic>;
+    final name = _activeCampus;
+    if (name == null) return <String, dynamic>{'schoolLocation': null, 'busStops': [], 'motoStops': []};
+    return pins.putIfAbsent(name, () => <String, dynamic>{
+      'schoolLocation': null, 'busStops': <Map>[], 'motoStops': <Map>[],
+    }) as Map<String, dynamic>;
+  }
+
+  void _setActiveCampus(String name) => setState(() => _activeCampus = name);
 
   List<Map<String, dynamic>> _normStops(dynamic raw) {
     if (raw is! List) return [];
@@ -4365,18 +4457,18 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   Future<void> _onTransportMapTap(LatLng p) async {
     if (_pinMode == 'school') {
       final label = await reverseGeocodeAddress(p) ?? coordsLabel(p);
-      if (mounted) setState(() => d['schoolLocation'] = {'lat': p.latitude, 'lng': p.longitude, 'label': label});
+      if (mounted) setState(() => _pins['schoolLocation'] = {'lat': p.latitude, 'lng': p.longitude, 'label': label});
     } else {
       final name = await _promptText(_pinMode == 'bus' ? 'Bus stop name' : 'Moto stop name');
       if (name == null || name.trim().isEmpty) return;
       final key = _pinMode == 'bus' ? 'busStops' : 'motoStops';
-      setState(() => (d[key] as List).add({'name': name.trim(), 'lat': p.latitude, 'lng': p.longitude}));
+      setState(() => (_pins[key] as List).add({'name': name.trim(), 'lat': p.latitude, 'lng': p.longitude}));
     }
   }
 
   Widget _transportMap() {
     final markers = <Marker>[];
-    final school = d['schoolLocation'] as Map?;
+    final school = _pins['schoolLocation'] as Map?;
     if (school != null) {
       markers.add(Marker(
         point: LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble()),
@@ -4384,14 +4476,14 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
         child: const Icon(Icons.school, color: C.greenDark, size: 34),
       ));
     }
-    for (final s in (d['busStops'] as List).cast<Map>()) {
+    for (final s in (_pins['busStops'] as List).cast<Map>()) {
       markers.add(Marker(
         point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
         width: 28, height: 28,
         child: const Icon(Icons.directions_bus, color: Color(0xFF2A5C8F), size: 28),
       ));
     }
-    for (final s in (d['motoStops'] as List).cast<Map>()) {
+    for (final s in (_pins['motoStops'] as List).cast<Map>()) {
       markers.add(Marker(
         point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
         width: 28, height: 28,
@@ -4403,6 +4495,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
       child: SizedBox(
         height: 220,
         child: FlutterMap(
+          key: ValueKey(_activeCampus),
           mapController: _transportMapController,
           options: MapOptions(
             initialCenter: school != null
@@ -4427,9 +4520,9 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   /// server-side on save. Null when the school isn't pinned yet, or there
   /// are no stops of this type yet (never fabricates a distance).
   double? _nearestKm(String key) {
-    final school = d['schoolLocation'] as Map?;
+    final school = _pins['schoolLocation'] as Map?;
     if (school == null) return null;
-    final stops = (d[key] as List).cast<Map>();
+    final stops = (_pins[key] as List).cast<Map>();
     if (stops.isEmpty) return null;
     return stops.map((s) => haversineKm(
         (school['lat'] as num).toDouble(), (school['lng'] as num).toDouble(),
@@ -4524,19 +4617,49 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
 
   num? _n(String k) => d[k] is num ? d[k] as num : null;
 
+  // Filling in criteria before any campus/programme exists would produce
+  // numbers with nothing for an A2 graduate to actually match against.
+  bool get _blocked => _campuses.isEmpty || !_hasProgrammes;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       drawer: staffDrawer(context),
       appBar: staffAppBar(context, 'Criteria answers', back: true),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: (loading || _blocked) ? null : FloatingActionButton.extended(
         onPressed: _save, backgroundColor: C.green,
         icon: const Icon(Icons.save, color: Colors.white),
         label: const Text('Save', style: TextStyle(color: Colors.white)),
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator(color: C.green))
-          : ListView(
+          : _blocked
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(28),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.apartment, color: C.muted, size: 40),
+                      const SizedBox(height: 14),
+                      const Text('Add your campuses and programmes first',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontWeight: FontWeight.w700, color: C.ink, fontSize: 16)),
+                      const SizedBox(height: 8),
+                      Text(
+                        _campuses.isEmpty
+                            ? 'Criteria answers (including map pins) are set per campus — add at least one campus before filling this in.'
+                            : 'Add at least one programme so A2 graduates have something to match your criteria against.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: C.muted, fontSize: 12.5, height: 1.4),
+                      ),
+                      const SizedBox(height: 20),
+                      primaryButton('Go to Campuses & programmes', () async {
+                        await Navigator.push(context, MaterialPageRoute(builder: (_) => const StaffCampusesScreen()));
+                        _load();
+                      }),
+                    ]),
+                  ),
+                )
+              : ListView(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 90),
               children: [
                 const Text('These answers are what A2 graduates see on your university detail page, and what TOPSIS ranks on. Numeric fields feed the score.',
@@ -4558,66 +4681,86 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                 _yesNo('Available?', 'accommodation'),
 
                 _section('C09 · Transport proximity'),
-                const Text('Mark the school location, then any nearby bus and moto stops on the map.',
-                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
-                const SizedBox(height: 10),
-                Wrap(spacing: 8, runSpacing: 8, children: [
-                  _pinModeChip('school', 'Pin school', Icons.location_on, C.greenDark),
-                  _pinModeChip('bus', 'Add bus stop', Icons.directions_bus, const Color(0xFF2A5C8F)),
-                  _pinModeChip('moto', 'Set moto stop', Icons.two_wheeler, const Color(0xFFC25A1F)),
-                ]),
-                const SizedBox(height: 10),
-                _transportMap(),
-                const SizedBox(height: 6),
-                if (d['schoolLocation'] == null)
-                  const Text('Tap "Pin school" to mark the campus on the map.',
-                      style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
-                const SizedBox(height: 6),
-                if (d['schoolLocation'] != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Chip(
-                      avatar: const Icon(Icons.school, size: 15, color: C.greenDark),
-                      label: Text((d['schoolLocation'] as Map)['label'] ?? 'School', style: const TextStyle(fontSize: 12)),
-                      backgroundColor: const Color(0xFFDCEBE3),
-                      onDeleted: () => setState(() => d['schoolLocation'] = null),
-                    ),
-                  ),
-                if (d['schoolLocation'] != null) ...[
-                  Builder(builder: (_) {
-                    final busKm = _nearestKm('busStops');
-                    final motoKm = _nearestKm('motoStops');
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(
-                          busKm != null ? 'Nearest bus stop: ${busKm.toStringAsFixed(2)} km' : 'Nearest bus stop: add a bus stop pin to compute.',
-                          style: TextStyle(fontSize: 11, color: busKm != null ? C.ink : C.muted,
-                              fontStyle: busKm != null ? FontStyle.normal : FontStyle.italic),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          motoKm != null ? 'Nearest moto stop: ${motoKm.toStringAsFixed(2)} km' : 'Nearest moto stop: add a moto stop pin to compute.',
-                          style: TextStyle(fontSize: 11, color: motoKm != null ? C.ink : C.muted,
-                              fontStyle: motoKm != null ? FontStyle.normal : FontStyle.italic),
-                        ),
-                      ]),
+                if (_campuses.isEmpty)
+                  const Text('Add a campus first, under Campuses & programmes — pins are set per campus.',
+                      style: TextStyle(color: C.muted, fontSize: 11.5, fontStyle: FontStyle.italic, height: 1.4))
+                else ...[
+                  const Text('Pick a campus, then mark its school location and any nearby bus/moto stops. Each campus gets its own pins.',
+                      style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                  const SizedBox(height: 10),
+                  Wrap(spacing: 8, runSpacing: 8, children: _campuses.map((c) {
+                    final name = c['name'] as String;
+                    final on = _activeCampus == name;
+                    return GestureDetector(
+                      onTap: () => _setActiveCampus(name),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                            color: on ? C.ink : Colors.white, borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: on ? C.ink : C.border)),
+                        child: Text(name, style: TextStyle(color: on ? Colors.white : C.ink, fontSize: 12, fontWeight: FontWeight.w600)),
+                      ),
                     );
-                  }),
-                ],
-                Wrap(spacing: 6, runSpacing: 6, children: (d['busStops'] as List).cast<Map>().map((s) => Chip(
-                      avatar: const Icon(Icons.directions_bus, size: 14, color: Color(0xFF2A5C8F)),
-                      label: Text('${s['name']}', style: const TextStyle(fontSize: 12)),
-                      backgroundColor: const Color(0xFFDCE9F2),
-                      onDeleted: () => setState(() => (d['busStops'] as List).remove(s)),
-                    )).toList()),
-                const SizedBox(height: 6),
-                Wrap(spacing: 6, runSpacing: 6, children: (d['motoStops'] as List).cast<Map>().map((s) => Chip(
+                  }).toList()),
+                  const SizedBox(height: 12),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    _pinModeChip('school', 'Pin school', Icons.location_on, C.greenDark),
+                    _pinModeChip('bus', 'Add bus stop', Icons.directions_bus, const Color(0xFF2A5C8F)),
+                    _pinModeChip('moto', 'Set moto stop', Icons.two_wheeler, const Color(0xFFC25A1F)),
+                  ]),
+                  const SizedBox(height: 10),
+                  _transportMap(),
+                  const SizedBox(height: 6),
+                  if (_pins['schoolLocation'] == null)
+                    const Text('Tap "Pin school" to mark this campus on the map.',
+                        style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
+                  const SizedBox(height: 6),
+                  if (_pins['schoolLocation'] != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Chip(
+                        avatar: const Icon(Icons.school, size: 15, color: C.greenDark),
+                        label: Text((_pins['schoolLocation'] as Map)['label'] ?? 'School', style: const TextStyle(fontSize: 12)),
+                        backgroundColor: const Color(0xFFDCEBE3),
+                        onDeleted: () => setState(() => _pins['schoolLocation'] = null),
+                      ),
+                    ),
+                  if (_pins['schoolLocation'] != null) ...[
+                    Builder(builder: (_) {
+                      final busKm = _nearestKm('busStops');
+                      final motoKm = _nearestKm('motoStops');
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(
+                            busKm != null ? 'Nearest bus stop: ${busKm.toStringAsFixed(2)} km' : 'Nearest bus stop: add a bus stop pin to compute.',
+                            style: TextStyle(fontSize: 11, color: busKm != null ? C.ink : C.muted,
+                                fontStyle: busKm != null ? FontStyle.normal : FontStyle.italic),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            motoKm != null ? 'Nearest moto stop: ${motoKm.toStringAsFixed(2)} km' : 'Nearest moto stop: add a moto stop pin to compute.',
+                            style: TextStyle(fontSize: 11, color: motoKm != null ? C.ink : C.muted,
+                                fontStyle: motoKm != null ? FontStyle.normal : FontStyle.italic),
+                          ),
+                        ]),
+                      );
+                    }),
+                  ],
+                  Wrap(spacing: 6, runSpacing: 6, children: (_pins['busStops'] as List).cast<Map>().map((s) => Chip(
+                        avatar: const Icon(Icons.directions_bus, size: 14, color: Color(0xFF2A5C8F)),
+                        label: Text('${s['name']}', style: const TextStyle(fontSize: 12)),
+                        backgroundColor: const Color(0xFFDCE9F2),
+                        onDeleted: () => setState(() => (_pins['busStops'] as List).remove(s)),
+                      )).toList()),
+                  const SizedBox(height: 6),
+                  Wrap(spacing: 6, runSpacing: 6, children: (_pins['motoStops'] as List).cast<Map>().map((s) => Chip(
                       avatar: const Icon(Icons.two_wheeler, size: 14, color: Color(0xFFC25A1F)),
                       label: Text('${s['name']}', style: const TextStyle(fontSize: 12)),
                       backgroundColor: const Color(0xFFF7E4D3),
-                      onDeleted: () => setState(() => (d['motoStops'] as List).remove(s)),
+                      onDeleted: () => setState(() => (_pins['motoStops'] as List).remove(s)),
                     )).toList()),
+                ],
                 _section('C11 · Internship & industry partners'),
                 const Text('More partner companies raises this criterion\'s score.',
                     style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
@@ -4657,6 +4800,10 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                   const SizedBox(width: 10),
                   Expanded(child: _numField('Institution size · C22', 'C22')),
                 ]),
+                const Text('A longer track record scores higher.',
+                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                const SizedBox(height: 6),
+                _numField('Years of operation · C21', 'C21'),
                 _numField('Average class size · C05', 'C05'),
                 Row(children: [
                   Expanded(child: _numField('Completion rate (%) · C06', 'C06')),
@@ -4681,7 +4828,9 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                   const Text('These criteria don\'t have a dedicated field yet — enter a number if you have one.',
                       style: TextStyle(color: C.muted, fontSize: 11)),
                   const SizedBox(height: 8),
-                  ...otherCriteria.map((c) => _numField('${c['label']} · ${c['code']}', c['code'] as String)),
+                  ...otherCriteria.map((c) => _autoCriteriaCodes.contains(c['code'])
+                      ? _autoField('${c['label']} · ${c['code']}')
+                      : _numField('${c['label']} · ${c['code']}', c['code'] as String)),
                 ],
               ],
             ),
@@ -4706,6 +4855,18 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
             decoration: fieldDeco('Enter a number'),
             onChanged: (v) => d[key] = double.tryParse(v.trim()) ?? d[key],
           ),
+        ]),
+      );
+
+  // Read-only row for criteria staff never fill in directly (C03/C04/C24) —
+  // shown so they can see it's a recognized criterion, with no text box.
+  Widget _autoField(String label) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
+          const SizedBox(height: 4),
+          const Text('Determined automatically — not staff-entered.',
+              style: TextStyle(color: C.muted, fontSize: 11, fontStyle: FontStyle.italic)),
         ]),
       );
 

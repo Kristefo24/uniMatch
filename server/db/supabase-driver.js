@@ -52,8 +52,8 @@ async function seedIfEmpty() {
     }
   }
   for (const pr of buildProgrammes()) {
-    await q('INSERT INTO programmes (id,name,dept,university_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',
-      [pr.id, pr.name, pr.dept, pr.universityId]);
+    await q('INSERT INTO programmes (id,name,dept,university_id,campus) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',
+      [pr.id, pr.name, pr.dept, pr.universityId, pr.campus || null]);
   }
   for (const r of STAFF_REQUESTS) {
     await q('INSERT INTO staff_requests (id,name,email,university_id,status) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',
@@ -84,6 +84,7 @@ async function hydrateUniversity(u) {
     schoolLocation: (sd.criteria && sd.criteria.schoolLocation) || null,
     busStops: (sd.criteria && Array.isArray(sd.criteria.busStops)) ? sd.criteria.busStops : [],
     motoStops: (sd.criteria && Array.isArray(sd.criteria.motoStops)) ? sd.criteria.motoStops : [],
+    campusPins: (sd.criteria && sd.criteria.campusPins && typeof sd.criteria.campusPins === 'object') ? sd.criteria.campusPins : {},
   };
 }
 
@@ -279,8 +280,8 @@ module.exports = {
     await this._saveStaffData(uniId, d);
     await q('DELETE FROM programmes WHERE university_id=$1', [uniId]);
     for (const pr of programmes) {
-      await q('INSERT INTO programmes (id,name,dept,university_id) VALUES ($1,$2,$3,$4)',
-        [uid('prog'), pr.name, pr.dept, uniId]);
+      await q('INSERT INTO programmes (id,name,dept,university_id,campus) VALUES ($1,$2,$3,$4,$5)',
+        [uid('prog'), pr.name, pr.dept, uniId, pr.campus || null]);
     }
     return d;
   },
