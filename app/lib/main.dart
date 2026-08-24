@@ -5179,7 +5179,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 Icons.tune, const AdminCriteriaScreen(),
                 bg: const Color(0xFFDCEBE3), fg: C.green),
             _card(context, 'Student accounts', 'Suspend or restore A2 graduates',
-                Icons.people_outline, const AdminStudentsScreen(),
+                Icons.people_outline, const AdminStudentsScreen(), badge: studentCount,
                 bg: const Color(0xFFF6EBCF), fg: const Color(0xFFB48412)),
             _card(context, 'Reports', 'Generate & download platform reports (CSV)',
                 Icons.bar_chart, const AdminReportsScreen(),

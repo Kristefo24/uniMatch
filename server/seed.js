@@ -22,124 +22,20 @@ const DEPARTMENTS = [
   'Architecture, Construction, Hospitality & Tourism',
 ];
 
-// Each university: vals carry the criteria the ranking reads.
+// Each university: vals carry the criteria the ranking reads. campuses and
+// programmes start empty — a university has no data at all (and A2
+// graduates see nothing for it: no departments, no programmes) until real
+// staff register for it and enter their own campuses and programmes via the
+// Staff dashboard. This matches the same "never pre-filled, only real
+// staff-entered data" rule already applied to criteria vals above.
 const UNIVERSITIES = [
-  { id:'uni-uok', abbr:'UoK', name:'University of Kigali',
-    campuses:[
-      {name:'Remera Campus', depts:['Business, Economics & Management']},
-      {name:'Main Campus', depts:['Computing, IT & Engineering','Education & Social Sciences','Law, Governance & Public Affairs']},
-    ],
-    programmes:[
-      {name:'Public Administration and Local Governance', dept:'Business, Economics & Management', campus:'Remera Campus', years:4},
-      {name:'Marketing (Hons)', dept:'Business, Economics & Management', campus:'Remera Campus', years:4},
-      {name:'Supplies and Procurement Management (Hons)', dept:'Business, Economics & Management', campus:'Remera Campus', years:4},
-      {name:'Economics (Hons)', dept:'Business, Economics & Management', campus:'Remera Campus', years:4},
-      {name:'Finance (Hons)', dept:'Business, Economics & Management', campus:'Remera Campus', years:4},
-      {name:'Accounting (Hons)', dept:'Business, Economics & Management', campus:'Remera Campus', years:4},
-      {name:'Information Technology (Hons)', dept:'Computing, IT & Engineering', campus:'Main Campus', years:4},
-      {name:'Computer Science (Hons)', dept:'Computing, IT & Engineering', campus:'Main Campus', years:4},
-      {name:'Business Information Technology (Hons)', dept:'Computing, IT & Engineering', campus:'Main Campus', years:4},
-      {name:'Early Childhood Development Education (ECD)', dept:'Education & Social Sciences', campus:'Main Campus', years:4},
-      {name:'Law (Hons)', dept:'Law, Governance & Public Affairs', campus:'Main Campus', years:4},
-    ],
-    vals:{} },
-
-  { id:'uni-eau', abbr:'EAU', name:'East African University',
-    campuses:[{name:'Kicukiro Campus', depts:['Arts, Humanities & Communication','Architecture, Construction, Hospitality & Tourism']}],
-    programmes:[
-      {name:'Theatre & Performing Arts', dept:'Arts, Humanities & Communication', campus:'Kicukiro Campus', years:3},
-      {name:'Animation & Visual Effects', dept:'Arts, Humanities & Communication', campus:'Kicukiro Campus', years:3},
-      {name:'Media & Communication', dept:'Arts, Humanities & Communication', campus:'Kicukiro Campus', years:3},
-      {name:'Film Editing & Post-Production', dept:'Arts, Humanities & Communication', campus:'Kicukiro Campus', years:3},
-      {name:'Tourism Management', dept:'Architecture, Construction, Hospitality & Tourism', campus:'Kicukiro Campus', years:3},
-      {name:'Hotel & Hospitality Management', dept:'Architecture, Construction, Hospitality & Tourism', campus:'Kicukiro Campus', years:3},
-      {name:'Leisure Management', dept:'Architecture, Construction, Hospitality & Tourism', campus:'Kicukiro Campus', years:3},
-      {name:'Travel & Tourism', dept:'Architecture, Construction, Hospitality & Tourism', campus:'Kicukiro Campus', years:3},
-      {name:'Journalism', dept:'Arts, Humanities & Communication', campus:'Kicukiro Campus', years:3},
-      {name:'Journalism Radio & Television Broadcasting', dept:'Arts, Humanities & Communication', campus:'Kicukiro Campus', years:3},
-      {name:'Public Relations', dept:'Arts, Humanities & Communication', campus:'Kicukiro Campus', years:3},
-    ],
-    vals:{} },
-
-  { id:'uni-alu', abbr:'ALU', name:'African Leadership University',
-    campuses:[{name:'Bumbogo Campus', depts:['Business, Economics & Management','Computing, IT & Engineering']}],
-    programmes:[
-      {name:'Entrepreneurial Leadership (BEL)', dept:'Business, Economics & Management', campus:'Bumbogo Campus', years:3},
-      {name:'Software Engineering (BSE)', dept:'Computing, IT & Engineering', campus:'Bumbogo Campus', years:3},
-      {name:'Information Technology', dept:'Computing, IT & Engineering', campus:'Bumbogo Campus', years:3},
-      {name:'Business Information and Technology', dept:'Computing, IT & Engineering', campus:'Bumbogo Campus', years:3},
-      {name:'International Business & Trade (IBT)', dept:'Business, Economics & Management', campus:'Bumbogo Campus', years:3},
-      {name:'Strategic Management', dept:'Business, Economics & Management', campus:'Bumbogo Campus', years:3},
-    ],
-    vals:{} },
-
-  { id:'uni-auca', abbr:'AUCA', name:'Adventist University of Central Africa',
-    campuses:[
-      {name:'Gishushu Campus', depts:['Computing, IT & Engineering']},
-      {name:'Masoro Campus', depts:['Business, Economics & Management','Education & Social Sciences','Arts, Humanities & Communication','Health & Medical Sciences']},
-    ],
-    programmes:[
-      {name:'Software Engineering', dept:'Computing, IT & Engineering', campus:'Gishushu Campus', years:4},
-      {name:'Information Management', dept:'Computing, IT & Engineering', campus:'Gishushu Campus', years:4},
-      {name:'Network & Communication Systems', dept:'Computing, IT & Engineering', campus:'Gishushu Campus', years:4},
-      {name:'Marketing', dept:'Business, Economics & Management', campus:'Masoro Campus', years:4},
-      {name:'Management', dept:'Business, Economics & Management', campus:'Masoro Campus', years:4},
-      {name:'Finance', dept:'Business, Economics & Management', campus:'Masoro Campus', years:4},
-      {name:'Accounting', dept:'Business, Economics & Management', campus:'Masoro Campus', years:4},
-      {name:'Education Psychology', dept:'Education & Social Sciences', campus:'Masoro Campus', years:4},
-      {name:'Literature & Languages', dept:'Education & Social Sciences', campus:'Masoro Campus', years:4},
-      {name:'Mathematics & Sciences', dept:'Education & Social Sciences', campus:'Masoro Campus', years:4},
-      {name:'Theology', dept:'Arts, Humanities & Communication', campus:'Masoro Campus', years:3},
-      {name:'Nursing and Midwifery', dept:'Health & Medical Sciences', campus:'Masoro Campus', years:5},
-    ],
-    vals:{} },
-
-  { id:'uni-urcmhs', abbr:'UR/CMHS', name:'UR College of Medicine & Health Sciences',
-    campuses:[{name:'Remera Campus', depts:['Health & Medical Sciences']}],
-    programmes:[
-      {name:'Medicine', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Pharmacy', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Nursing', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Midwifery', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Public Health', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Health Promotion', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Dentist', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Dental Surgery', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Medical Laboratory Science', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Radiography', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-      {name:'Nutrition', dept:'Health & Medical Sciences', campus:'Remera Campus', years:5},
-    ],
-    vals:{} },
-
-  { id:'uni-ulk', abbr:'ULK', name:'Kigali Independent University',
-    campuses:[{name:'Gisozi Campus', depts:['Business, Economics & Management','Education & Social Sciences','Law, Governance & Public Affairs','Computing, IT & Engineering']}],
-    programmes:[
-      {name:'Economics (Hons)', dept:'Business, Economics & Management', campus:'Gisozi Campus', years:4},
-      {name:'Finance (Hons)', dept:'Business, Economics & Management', campus:'Gisozi Campus', years:4},
-      {name:'Accounting (Hons)', dept:'Business, Economics & Management', campus:'Gisozi Campus', years:4},
-      {name:'Rural Development (Hons)', dept:'Business, Economics & Management', campus:'Gisozi Campus', years:4},
-      {name:'Management (Hons)', dept:'Business, Economics & Management', campus:'Gisozi Campus', years:4},
-      {name:'Development Studies (Hons)', dept:'Education & Social Sciences', campus:'Gisozi Campus', years:4},
-      {name:'International Relations (Hons)', dept:'Education & Social Sciences', campus:'Gisozi Campus', years:4},
-      {name:'Population Studies (Hons)', dept:'Education & Social Sciences', campus:'Gisozi Campus', years:4},
-      {name:'Sociology (Hons)', dept:'Education & Social Sciences', campus:'Gisozi Campus', years:4},
-      {name:'Administrative Sciences (Hons)', dept:'Education & Social Sciences', campus:'Gisozi Campus', years:4},
-      {name:'Administrative Sciences (Hons)', dept:'Law, Governance & Public Affairs', campus:'Gisozi Campus', years:4},
-      {name:'Private Law (Hons)', dept:'Law, Governance & Public Affairs', campus:'Gisozi Campus', years:4},
-      {name:'Data Science (Hons)', dept:'Computing, IT & Engineering', campus:'Gisozi Campus', years:4},
-      {name:'Software Engineering (Hons)', dept:'Computing, IT & Engineering', campus:'Gisozi Campus', years:4},
-      {name:'Networking (Hons)', dept:'Computing, IT & Engineering', campus:'Gisozi Campus', years:4},
-    ],
-    vals:{} },
-
-  { id:'uni-kepler', abbr:'Kepler', name:'Kepler College',
-    campuses:[{name:'Kigali Heights Campus', depts:['Business, Economics & Management','Arts, Humanities & Communication']}],
-    programmes:[
-      {name:'Arts in Project Management', dept:'Business, Economics & Management', campus:'Kigali Heights Campus', years:3},
-      {name:'Science in Business Analytics', dept:'Business, Economics & Management', campus:'Kigali Heights Campus', years:3},
-      {name:'Arts in Communications', dept:'Arts, Humanities & Communication', campus:'Kigali Heights Campus', years:3},
-    ],
-    vals:{} },
+  { id:'uni-uok', abbr:'UoK', name:'University of Kigali', campuses:[], programmes:[], vals:{} },
+  { id:'uni-eau', abbr:'EAU', name:'East African University', campuses:[], programmes:[], vals:{} },
+  { id:'uni-alu', abbr:'ALU', name:'African Leadership University', campuses:[], programmes:[], vals:{} },
+  { id:'uni-auca', abbr:'AUCA', name:'Adventist University of Central Africa', campuses:[], programmes:[], vals:{} },
+  { id:'uni-urcmhs', abbr:'UR/CMHS', name:'UR College of Medicine & Health Sciences', campuses:[], programmes:[], vals:{} },
+  { id:'uni-ulk', abbr:'ULK', name:'Kigali Independent University', campuses:[], programmes:[], vals:{} },
+  { id:'uni-kepler', abbr:'Kepler', name:'Kepler College', campuses:[], programmes:[], vals:{} },
 ];
 
 // Programmes across all universities (explicit, from each university's programmes list).
