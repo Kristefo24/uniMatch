@@ -109,3 +109,19 @@ CREATE TABLE IF NOT EXISTS criteria_selections (
   code        VARCHAR(8)  NOT NULL,
   created_at  VARCHAR(40)
 );
+
+-- One row per A2 graduate, holding a full snapshot of the top-5 ranked
+-- universities (JSON array of {id, abbr, name, photo, cc, vals, combos} —
+-- the same shape /rank returns) from their most recent genuine ranking, plus
+-- the criteria that produced it — replaced, not accumulated, on every new
+-- ranking. Powers the admin "university popularity" pie chart (by id) and
+-- lets a student's "My rankings" page show their last result again after a
+-- fresh login/session, without needing to reconstruct dept/programme/home
+-- context to re-run TOPSIS.
+CREATE TABLE IF NOT EXISTS user_last_ranking (
+  user_id         VARCHAR(64) PRIMARY KEY,
+  university_ids  TEXT NOT NULL,
+  criteria        TEXT,
+  updated_at      VARCHAR(40)
+);
+ALTER TABLE user_last_ranking ADD COLUMN IF NOT EXISTS criteria TEXT;

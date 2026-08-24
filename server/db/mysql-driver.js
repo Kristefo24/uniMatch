@@ -436,4 +436,44 @@ module.exports = {
       'LEFT JOIN criteria c ON c.code = cs.code GROUP BY cs.code, c.label ORDER BY count DESC');
     return rows.map(r => ({ code: r.code, label: r.label || r.code, count: r.count }));
   },
+
+  async saveUserLastRanking(userId, ranked, criteria) {
+    const p = await getPool();
+    await p.query(
+      'INSERT INTO user_last_ranking (user_id,university_ids,criteria,updated_at) VALUES (?,?,?,?) ' +
+      'ON DUPLICATE KEY UPDATE university_ids=VALUES(university_ids), criteria=VALUES(criteria), updated_at=VALUES(updated_at)',
+      [userId, JSON.stringify(ranked), JSON.stringify(criteria || []), new Date().toISOString()]);
+    return { ok: true };
+  },
+  async getUserLastRanking(userId) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT university_ids, criteria, updated_at FROM user_last_ranking WHERE user_id=?', [userId]);
+    if (!rows.length) return null;
+    let ranked = [], criteria = [];
+    try { ranked = JSON.parse(rows[0].university_ids) || []; } catch { /* ignore malformed row */ }
+    try { criteria = JSON.parse(rows[0].criteria) || []; } catch { /* ignore malformed row */ }
+    return { ranked, criteria, updatedAt: rows[0].updated_at };
+  },
+  async universityPopularity() {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT university_ids FROM user_last_ranking');
+    const counts = {};
+    for (const row of rows) {
+      let ranked = [];
+      try { ranked = JSON.parse(row.university_ids) || []; } catch { /* ignore malformed row */ }
+      for (const u of ranked) counts[u.id] = (counts[u.id] || 0) + 1;
+    }
+    // Denominator is every registered A2 graduate, not just those who've
+    // ranked at least once — e.g. "22% of all 30 graduate accounts".
+    const totalStudents = (await this.listStudents()).length;
+    const unis = await this.listUniversities();
+    return {
+      totalStudents,
+      universities: unis.map(u => ({
+        id: u.id, abbr: u.abbr, name: u.name,
+        count: counts[u.id] || 0,
+        pct: totalStudents ? Number(((counts[u.id] || 0) / totalStudents * 100).toFixed(1)) : 0,
+      })),
+    };
+  },
 };

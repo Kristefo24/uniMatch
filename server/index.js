@@ -70,6 +70,12 @@ app.post('/login', wrap(async (req, res) => {
 app.put('/me', auth(), wrap(async (req, res) => {
   res.json(await db.updateUser(req.user.id, req.body || {}));
 }));
+// The student's own last saved ranking snapshot (top-5, with criteria used) —
+// lets "My rankings" show a real result after a fresh login/session, instead
+// of only the current in-memory session's result.
+app.get('/me/last-ranking', auth(), wrap(async (req, res) => {
+  res.json(await db.getUserLastRanking(req.user.id));
+}));
 
 // ---- catalogue (public) ---------------------------------------------------
 app.get('/programmes', wrap(async (req, res) => {
@@ -102,17 +108,23 @@ app.get('/criteria', wrap(async (_req, res) => {
 
 // ---- ranking (TOPSIS) -----------------------------------------------------
 app.post('/rank', auth(false), wrap(async (req, res) => {
-  const { universityIds, criteria, preferredReligion, dept, homeLat, homeLng, budgetMin, budgetMax } = req.body || {};
+  const { universityIds, criteria, preferredReligion, dept, programme, homeLat, homeLng, budgetMin, budgetMax } = req.body || {};
   let unis = await db.listUniversities();
   if (Array.isArray(universityIds) && universityIds.length) {
     unis = unis.filter(u => universityIds.includes(u.id));
   }
-  // Hard eligibility filter: only universities that actually offer (or, via
-  // the department-fallback synthesis in listProgrammes, are treated as
-  // offering) the student's chosen department are ranked at all.
+  // Department/programme eligibility is a soft ordering preference now, not a
+  // hard filter — every university is still scored (so TOPSIS's vector
+  // normalisation is consistent regardless of which department is picked),
+  // and results always show at least 5 universities: department matches
+  // first, padded with the best-scoring non-matches if fewer than 5 offer
+  // the department at all.
+  let deptEligibleIds = null;
+  let exactProgrammeIds = null;
   if (dept) {
-    const eligible = new Set((await db.listProgrammes(dept)).map(p => p.universityId));
-    unis = unis.filter(u => eligible.has(u.id));
+    const progs = await db.listProgrammes(dept);
+    deptEligibleIds = new Set(progs.map(p => p.universityId));
+    if (programme) exactProgrammeIds = new Set(progs.filter(p => p.name === programme).map(p => p.universityId));
   }
   // Binary religion/culture match (PRD C25): only overridden when the student
   // actually picked a preference — otherwise C25 keeps whatever (if any)
@@ -148,11 +160,43 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
       return { ...u, vals: { ...u.vals, C01: gap } };
     });
   }
-  const ranked = topsis(unis, criteria || [])
+  let ranked = topsis(unis, criteria || [])
     .map(u => ({ id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, cc: Number(u.cc.toFixed(4)), vals: u.vals || {}, combos: u.combos || {} }));
+  if (deptEligibleIds) {
+    // Department matches always lead (cc-descending), non-matches pad the
+    // tail (never dropped) so the list is never shorter than the full pool.
+    const deptMatches = ranked.filter(u => deptEligibleIds.has(u.id));
+    const others = ranked.filter(u => !deptEligibleIds.has(u.id));
+    // Within deptMatches only: the exact-programme university jumps to #1,
+    // but only when it's genuinely competitive (cc within 0.15 of the best
+    // in-department alternative) — a big gap means it ranks at its own score
+    // instead, per "if the difference of the score is big, it ranks to its
+    // position."
+    if (exactProgrammeIds) {
+      const exactInDept = deptMatches.filter(u => exactProgrammeIds.has(u.id));
+      const others2 = deptMatches.filter(u => !exactProgrammeIds.has(u.id));
+      if (exactInDept.length && others2.length) {
+        const bestExact = exactInDept[0]; // deptMatches is still cc-desc at this point
+        const bestOther = others2[0];
+        if (bestExact.cc >= bestOther.cc - 0.15) {
+          const rest = deptMatches.filter(u => u.id !== bestExact.id);
+          ranked = [bestExact, ...rest, ...others];
+        } else {
+          ranked = [...deptMatches, ...others];
+        }
+      } else {
+        ranked = [...deptMatches, ...others];
+      }
+    } else {
+      ranked = [...deptMatches, ...others];
+    }
+  }
   const codes = Array.isArray(criteria) ? criteria.map(c => c.code).filter(Boolean) : [];
   if (codes.length) {
     try { await db.recordCriteriaSelections(req.user?.id, codes); } catch (e) { console.error(e); }
+    if (req.user && req.user.role === 'student') {
+      try { await db.saveUserLastRanking(req.user.id, ranked.slice(0, 5), criteria); } catch (e) { console.error(e); }
+    }
   }
   res.json({ ranked });
 }));
@@ -265,6 +309,9 @@ app.delete('/admin/criteria/:code', auth(), requireRole('admin'), wrap(async (re
 }));
 app.get('/admin/criteria-usage', auth(), requireRole('admin'), wrap(async (_req, res) => {
   res.json(await db.criteriaUsageCounts());
+}));
+app.get('/admin/university-popularity', auth(), requireRole('admin'), wrap(async (_req, res) => {
+  res.json(await db.universityPopularity());
 }));
 
 // admin: students (suspend / restore)

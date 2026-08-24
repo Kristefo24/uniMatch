@@ -20,6 +20,7 @@ function load() {
       db.users.push(...base.users.filter(u => u.role === 'student')); save();
     }
     if (!db.criteriaSelections) { db.criteriaSelections = []; save(); }
+    if (!db.userLastRanking) { db.userLastRanking = {}; save(); }
   } else {
     db = freshStore();
     save();
@@ -264,6 +265,37 @@ module.exports = {
     return Object.entries(counts)
       .map(([code, count]) => ({ code, label: byCode[code]?.label || code, count }))
       .sort((a, b) => b.count - a.count);
+  },
+
+  async saveUserLastRanking(userId, ranked, criteria) {
+    db.userLastRanking = db.userLastRanking || {};
+    db.userLastRanking[userId] = { ranked, criteria: criteria || [], updatedAt: new Date().toISOString() };
+    save();
+    return { ok: true };
+  },
+  async getUserLastRanking(userId) {
+    const row = (db.userLastRanking || {})[userId];
+    if (!row) return null;
+    return { ranked: row.ranked || [], criteria: row.criteria || [], updatedAt: row.updatedAt };
+  },
+  async universityPopularity() {
+    const rows = Object.values(db.userLastRanking || {});
+    const counts = {};
+    for (const row of rows) {
+      for (const u of row.ranked || []) counts[u.id] = (counts[u.id] || 0) + 1;
+    }
+    // Denominator is every registered A2 graduate, not just those who've
+    // ranked at least once — e.g. "22% of all 30 graduate accounts".
+    const totalStudents = (await this.listStudents()).length;
+    const unis = await this.listUniversities();
+    return {
+      totalStudents,
+      universities: unis.map(u => ({
+        id: u.id, abbr: u.abbr, name: u.name,
+        count: counts[u.id] || 0,
+        pct: totalStudents ? Number(((counts[u.id] || 0) / totalStudents * 100).toFixed(1)) : 0,
+      })),
+    };
   },
 
   // ---- admin: universities CRUD ----

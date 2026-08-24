@@ -34,8 +34,8 @@ const Map<String, String> kApplyUrls = {
 /// Set kApiUrl to your deployed backend and flip kUseHosted to true for
 /// release builds. Local dev (default) falls back to localhost (web/desktop)
 /// or 10.0.2.2 (Android emulator) — see RUN.md.
-const String kApiUrl = 'https://your-deployed-backend.example.com';
-const bool kUseHosted = false;
+const String kApiUrl = 'https://unimatch-production-276f.up.railway.app';
+const bool kUseHosted = true;
 final String kBaseUrl = kUseHosted
     ? kApiUrl
     : (kIsWeb ? 'http://localhost:4000' : 'http://10.0.2.2:4000');
@@ -113,8 +113,14 @@ Future<String?> reverseGeocodeAddress(LatLng p) async {
 }
 
 const List<String> kDepartments = [
-  'Computer Science', 'Software Engineering', 'Information Technology',
-  'Business Administration', 'Accounting', 'Nursing', 'Medicine', 'Pharmacy',
+  'Business, Economics & Management',
+  'Computing, IT & Engineering',
+  'Health & Medical Sciences',
+  'Education & Social Sciences',
+  'Law, Governance & Public Affairs',
+  'Arts, Humanities & Communication',
+  'Agriculture, Environment & Natural Sciences',
+  'Architecture, Construction, Hospitality & Tourism',
 ];
 
 // A2 combination codes a student can pick at signup / edit profile, each
@@ -230,6 +236,14 @@ class Api {
         if (photo != null) 'photo': photo,
       });
 
+  /// The student's own last saved ranking snapshot ({ranked, criteria,
+  /// updatedAt}), or null if they've never genuinely ranked — lets "My
+  /// rankings" show a real result after a fresh login/session.
+  static Future<Map<String, dynamic>?> myLastRanking() async {
+    final r = await _get('/me/last-ranking');
+    return r == null ? null : Map<String, dynamic>.from(r);
+  }
+
   static Future<List<dynamic>> programmes(String? dept) async =>
       await _get('/programmes${dept != null ? '?dept=${Uri.encodeQueryComponent(dept)}' : ''}') as List<dynamic>;
 
@@ -243,7 +257,7 @@ class Api {
   }
 
   static Future<List<dynamic>> rank(List<Map<String, dynamic>> criteria, {
-    String? preferredReligion, String? dept, double? homeLat, double? homeLng,
+    String? preferredReligion, String? dept, String? programme, double? homeLat, double? homeLng,
     double? budgetMin, double? budgetMax,
   }) async {
     final res = await _post('/rank', {
@@ -251,6 +265,7 @@ class Api {
       'criteria': criteria,
       if (preferredReligion != null) 'preferredReligion': preferredReligion,
       if (dept != null) 'dept': dept,
+      if (programme != null) 'programme': programme,
       if (homeLat != null) 'homeLat': homeLat,
       if (homeLng != null) 'homeLng': homeLng,
       if (budgetMin != null) 'budgetMin': budgetMin,
@@ -339,6 +354,8 @@ class Api {
   static Future<void> deleteCriterion(String code) => _delete('/admin/criteria/$code');
   static Future<List<dynamic>> criteriaUsage() async =>
       await _get('/admin/criteria-usage') as List<dynamic>;
+  static Future<Map<String, dynamic>> universityPopularity() async =>
+      Map<String, dynamic>.from(await _get('/admin/university-popularity'));
 
   // ---- admin: students ----
   static Future<List<dynamic>> adminStudents() async =>
@@ -1391,7 +1408,6 @@ class StudentHome extends StatefulWidget {
 
 class _StudentHomeState extends State<StudentHome> {
   List<dynamic> unis = [];
-  int? criteriaCount;
   final ScrollController _marqueeCtrl = ScrollController();
   Timer? _marqueeTimer;
 
@@ -1399,7 +1415,6 @@ class _StudentHomeState extends State<StudentHome> {
   void initState() {
     super.initState();
     Api.universities().then((v) { if (mounted) setState(() => unis = v); }).catchError((_) {});
-    Api.criteria().then((v) { if (mounted) setState(() => criteriaCount = v.length); }).catchError((_) {});
     // Auto-scrolling marquee — the list is rendered twice back-to-back and we
     // jump to 0 once we've scrolled past the first copy, for a seamless loop.
     _marqueeTimer = Timer.periodic(const Duration(milliseconds: 30), (_) {
@@ -1503,7 +1518,7 @@ class _StudentHomeState extends State<StudentHome> {
                 crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
                 mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.55,
                 children: [
-                  _action('Set criteria', criteriaCount != null ? '$criteriaCount criteria' : 'criteria',
+                  _action('Set criteria', '26 criteria',
                       Icons.tune, const Color(0xFFC7EBD8), C.green, _toDept),
                   _action('Shortlist', 'Saved', Icons.bookmark_border, const Color(0xFFF7D9C4), const Color(0xFFC25A1F),
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortlistScreen()))),
@@ -1657,13 +1672,51 @@ class _AllUniversitiesA2ScreenState extends State<AllUniversitiesA2Screen> {
 }
 
 /// A2: My rankings entry — no ranking yet ⇒ prompt to match first.
-class RankingsEntryScreen extends StatelessWidget {
+class RankingsEntryScreen extends StatefulWidget {
   const RankingsEntryScreen({super.key});
   @override
+  State<RankingsEntryScreen> createState() => _RankingsEntryScreenState();
+}
+
+class _RankingsEntryScreenState extends State<RankingsEntryScreen> {
+  bool loading = true;
+  List<dynamic>? preloaded;
+
+  @override
+  void initState() {
+    super.initState();
+    final hasLive = Session.lastRanking != null && Session.lastRanking!.isNotEmpty;
+    if (hasLive) {
+      loading = false;
+      return;
+    }
+    // No in-memory result (fresh login/session) — try restoring the
+    // student's last saved ranking snapshot from the server instead of
+    // just showing "No ranking yet".
+    Api.myLastRanking().then((r) {
+      if (!mounted) return;
+      final ranked = r?['ranked'] as List?;
+      if (ranked != null && ranked.isNotEmpty) {
+        Session.lastCriteria = List<Map<String, dynamic>>.from(
+            ((r!['criteria'] as List?) ?? const []).map((c) => Map<String, dynamic>.from(c)));
+        setState(() { preloaded = ranked; loading = false; });
+      } else {
+        setState(() => loading = false);
+      }
+    }).catchError((_) { if (mounted) setState(() => loading = false); });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final has = Session.lastRanking != null && Session.lastRanking!.isNotEmpty;
-    if (has) {
-      return ResultsScreen(criteria: Session.lastCriteria);
+    if (loading) {
+      return Scaffold(
+        appBar: a2AppBar(context, 'My rankings', back: true),
+        body: const Center(child: CircularProgressIndicator(color: C.green)),
+      );
+    }
+    final hasLive = Session.lastRanking != null && Session.lastRanking!.isNotEmpty;
+    if (hasLive || preloaded != null) {
+      return ResultsScreen(criteria: Session.lastCriteria, preloaded: preloaded);
     }
     return Scaffold(
       drawer: a2Drawer(context),
@@ -2397,8 +2450,9 @@ const List<String> kCriteriaCategories = [
 
 class _CriteriaScreenState extends State<CriteriaScreen> {
   final Set<String> selected = {};
-  // Categories collapsed by default; expand with the + button.
-  final Set<String> expanded = {};
+  // Categories collapsed by default; expand with the + button. Accordion
+  // behavior — opening one category closes whichever other was open.
+  String? expandedCategory;
   final TextEditingController _search = TextEditingController();
   List<Map<String, dynamic>> visible = [];
   bool loading = true;
@@ -2524,10 +2578,10 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                               final cat = entry.value;
                               final items = byCategory[cat]!;
                               final selCount = items.where((c) => selected.contains(c['code'])).length;
-                              final isOpen = query.isNotEmpty || expanded.contains(cat);
+                              final isOpen = query.isNotEmpty || expandedCategory == cat;
                               return [
                                 GestureDetector(
-                                  onTap: () => setState(() => isOpen ? expanded.remove(cat) : expanded.add(cat)),
+                                  onTap: () => setState(() => expandedCategory = expandedCategory == cat ? null : cat),
                                   child: Padding(
                                     padding: const EdgeInsets.only(top: 8, bottom: 6),
                                     child: Row(children: [
@@ -2655,7 +2709,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                 child: SizedBox(
                   height: 50,
                   child: ElevatedButton(
-                    onPressed: selected.isEmpty ? null : () {
+                    onPressed: selected.length < 2 ? null : () {
                       final criteria = selected.map((code) {
                         final c = visible.firstWhere((x) => x['code'] == code);
                         return {'code': code, 'weight': 1 / selected.length, 'direction': c['direction']};
@@ -2668,7 +2722,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                       disabledBackgroundColor: C.sand, disabledForegroundColor: C.muted, elevation: 0,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
                     ),
-                    child: Text('Continue · ${selected.length} selected',
+                    child: Text(selected.length < 2 ? 'Select at least 2 criteria' : 'Continue · ${selected.length} selected',
                         style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
                   ),
                 ),
@@ -2890,7 +2944,12 @@ class _LocationScreenState extends State<LocationScreen> {
 
 class ResultsScreen extends StatefulWidget {
   final List<Map<String, dynamic>> criteria;
-  const ResultsScreen({super.key, required this.criteria});
+  // When set, shows this exact saved snapshot instead of calling Api.rank()
+  // — used to restore "My rankings" after a fresh login/session, where
+  // Session's dept/programme/home-location context has been reset and a
+  // live re-fetch could no longer reproduce the same result.
+  final List<dynamic>? preloaded;
+  const ResultsScreen({super.key, required this.criteria, this.preloaded});
   @override
   State<ResultsScreen> createState() => _ResultsScreenState();
 }
@@ -2908,13 +2967,17 @@ class _ResultsScreenState extends State<ResultsScreen> {
     super.initState();
     final wantsReligion = widget.criteria.any((c) => c['code'] == 'C25') &&
         Session.preferredReligion != null && Session.preferredReligion != 'No preference';
-    _future = Api.rank(widget.criteria,
-        preferredReligion: wantsReligion ? Session.preferredReligion : null,
-        dept: Session.selectedDept,
-        homeLat: Session.homeLat,
-        homeLng: Session.homeLng,
-        budgetMin: Session.budgetMin,
-        budgetMax: Session.budgetMax).then((r) async {
+    final rankFuture = widget.preloaded != null
+        ? Future.value(widget.preloaded!)
+        : Api.rank(widget.criteria,
+            preferredReligion: wantsReligion ? Session.preferredReligion : null,
+            dept: Session.selectedDept,
+            programme: Session.selectedProgramme,
+            homeLat: Session.homeLat,
+            homeLng: Session.homeLng,
+            budgetMin: Session.budgetMin,
+            budgetMax: Session.budgetMax);
+    _future = rankFuture.then((r) async {
       Session.lastRanking = r;
       final entries = await Future.wait(r.map((u) async {
         final id = (u as Map)['id'] as String;
@@ -3115,6 +3178,7 @@ class _DetailScreenState extends State<DetailScreen> {
   Map<String, String> labelByCode = {};
   List<Map<String, dynamic>> allCriteria = [];
   bool showAdditionalDetails = false;
+  int? programmeCount;
 
   @override
   void initState() {
@@ -3133,6 +3197,10 @@ class _DetailScreenState extends State<DetailScreen> {
         allCriteria = list.map((c) => Map<String, dynamic>.from(c)).toList();
         labelByCode = { for (final c in allCriteria) c['code'] as String: c['label'] as String };
       });
+    }).catchError((_) {});
+    Api.programmes(null).then((list) {
+      final n = list.where((p) => (p as Map)['universityId'] == widget.id).length;
+      if (mounted) setState(() => programmeCount = n);
     }).catchError((_) {});
   }
 
@@ -3208,18 +3276,6 @@ class _DetailScreenState extends State<DetailScreen> {
           final crest = C.uni(abbr);
           final avgRating = u['avgRating'] as num?;
           final ratingCount = (u['ratingCount'] as num?)?.toInt() ?? 0;
-          final cc = Session.lastRanking == null ? null
-              : () {
-                  for (final r in Session.lastRanking!) { if ((r as Map)['id'] == u['id']) return ((r['cc'] ?? 0) as num).toDouble(); }
-                  return null;
-                }();
-          final rank = Session.lastRanking == null ? null
-              : () {
-                  for (var i = 0; i < Session.lastRanking!.length; i++) {
-                    if ((Session.lastRanking![i] as Map)['id'] == u['id']) return i + 1;
-                  }
-                  return null;
-                }();
           // Real distance only — computed server-side (Haversine) from the
           // student's picked home location the last time they ranked. No
           // home location set yet -> blank, never a fabricated number.
@@ -3278,9 +3334,9 @@ class _DetailScreenState extends State<DetailScreen> {
                   ]),
                   const SizedBox(height: 18),
                   Row(children: [
-                    _heroStat(cc != null ? (cc * 100).toStringAsFixed(0) : '—', 'CC SCORE'),
+                    _heroStat('${campuses.length}', 'CAMPUSES'),
                     _heroDiv(),
-                    _heroStat(rank != null ? '#$rank' : '—', 'YOUR RANK'),
+                    _heroStat(programmeCount != null ? '$programmeCount' : '—', 'PROGRAMMES'),
                     _heroDiv(),
                     _heroStat(kmHome != null ? '${kmHome is num ? kmHome.toStringAsFixed(1) : kmHome}' : '—', 'KM HOME'),
                   ]),
@@ -3340,12 +3396,42 @@ class _DetailScreenState extends State<DetailScreen> {
                     ),
                     ...items.map((c) {
                       final code = c['code'] as String;
-                      final value = vals[code] ?? staffAnswers[code];
+                      final value = code == 'C12'
+                          ? (vals['C12'] != null ? '${(vals['C12'] as num).toStringAsFixed(1)}%' : null)
+                          : code == 'C14'
+                              ? staffAnswers['library']
+                              : code == 'C16'
+                                  ? staffAnswers['sporting']
+                                  : code == 'C17'
+                                      ? staffAnswers['health']
+                                      : code == 'C23'
+                                          ? ((staffAnswers['minGrade'] as String?)?.trim().isNotEmpty == true
+                                              ? staffAnswers['minGrade']
+                                              : null)
+                                          : code == 'C25'
+                                              ? (staffAnswers['religiousBased'] == true
+                                                  ? (staffAnswers['religion'] ?? 'None')
+                                                  : 'None')
+                                              : code == 'C26'
+                                                  ? (() {
+                                                      final modes = <String>[
+                                                        if (staffAnswers['modeDay'] == true) 'Day',
+                                                        if (staffAnswers['modeEvening'] == true) 'Evening',
+                                                        if (staffAnswers['modeWeekend'] == true) 'Weekend',
+                                                      ];
+                                                      return modes.isEmpty ? null : modes.join(', ');
+                                                    })()
+                                                  : vals[code] ?? staffAnswers[code];
                       final names = code == 'C02'
                           ? List<String>.from(staffAnswers['partnerSchools'] ?? const [])
                           : code == 'C11'
                               ? List<String>.from(staffAnswers['companies'] ?? const [])
-                              : const <String>[];
+                              : code == 'C17'
+                                  ? List<String>.from(staffAnswers['healthPartners'] ?? const [])
+                                  : code == 'C12'
+                                      ? List<Map>.from(staffAnswers['cohorts'] ?? const [])
+                                          .map((c) => '${c['period']} · ${c['pct']}%').toList()
+                                      : const <String>[];
                       final busKm = code == 'C09' ? staffAnswers['schoolToBusKm'] as num? : null;
                       final motoKm = code == 'C09' ? staffAnswers['schoolToMotoKm'] as num? : null;
                       return Container(
@@ -3805,9 +3891,9 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
           const Text('Departments offered here', style: TextStyle(color: C.muted, fontSize: 12)),
           const SizedBox(height: 8),
           Wrap(spacing: 8, runSpacing: 8, children: [
-            // Fixed list plus any custom department already picked (e.g. added below) —
-            // so a previously-added custom department still shows as a chip on re-edit.
-            ...{...kDepartments, ...picked}.map((d) {
+            // Closed list — exactly the 8 uniform departments, no free-text
+            // additions, so every university's department taxonomy stays consistent.
+            ...kDepartments.map((d) {
               final on = picked.contains(d);
               return GestureDetector(
                 onTap: () => setSheet(() => on ? picked.remove(d) : picked.add(d)),
@@ -3820,16 +3906,6 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
                 ),
               );
             }),
-            ActionChip(
-              avatar: const Icon(Icons.add, size: 14, color: C.green),
-              label: const Text('Add department', style: TextStyle(fontSize: 12, color: C.green)),
-              backgroundColor: Colors.white,
-              side: const BorderSide(color: C.border),
-              onPressed: () async {
-                final v = await _promptText('Department name');
-                if (v != null && v.trim().isNotEmpty) setSheet(() => picked.add(v.trim()));
-              },
-            ),
           ]),
           if (picked.isNotEmpty) ...[
             const SizedBox(height: 18),
@@ -4384,8 +4460,58 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
     );
   }
 
+  /// Converts the yes/no toggles and free-text minimum grade into real
+  /// numeric scores so every criterion can actually feed TOPSIS when an A2
+  /// graduate selects it — computed once here at save time. The visible
+  /// staff UI stays exactly as-is (still yes/no, still free text); this
+  /// just derives the number behind it. Never fabricates: a field the
+  /// staff never touched is removed from d, not defaulted to 0.
+  void _deriveNumericCriteria() {
+    void boolToNum(String flag, String code) {
+      if (d[flag] == true) d[code] = 1;
+      else if (d[flag] == false) d[code] = 0;
+      else d.remove(code);
+    }
+    boolToNum('accommodation', 'C08');
+    boolToNum('library', 'C14');
+    boolToNum('sporting', 'C16');
+    boolToNum('religiousBased', 'C25');
+
+    // C17: richer than yes/no — count of insurance/clinic partners, the
+    // same "more partners scores higher" pattern already used for C02/C11.
+    if (d['health'] != null) {
+      d['C17'] = List.from(d['healthPartners'] ?? const []).length;
+    } else {
+      d.remove('C17');
+    }
+
+    // C26: count of study modes offered — more flexibility scores higher.
+    if (d['modeDay'] != null || d['modeEvening'] != null || d['modeWeekend'] != null) {
+      d['C26'] = [d['modeDay'], d['modeEvening'], d['modeWeekend']].where((m) => m == true).length;
+    } else {
+      d.remove('C26');
+    }
+
+    // C23: parse the free-text minimum grade into a points scale (lower =
+    // easier entry = better, matching the 'cost' direction) — staff-defined
+    // scale: A=1, B=2, C=3, D=4, F=5. If several letters are mentioned
+    // (e.g. "Bs or Cs"), take the most lenient one (highest number) since
+    // that's the real floor a student needs to clear.
+    const gradeScale = {'A': 1, 'B': 2, 'C': 3, 'D': 4, 'F': 5};
+    final gradeMatches = RegExp(r'\b([ABCDF])S?\b', caseSensitive: false)
+        .allMatches((d['minGrade'] as String?) ?? '')
+        .map((m) => gradeScale[m.group(1)!.toUpperCase()]!)
+        .toList();
+    if (gradeMatches.isEmpty) {
+      d.remove('C23');
+    } else {
+      d['C23'] = gradeMatches.reduce((a, b) => a > b ? a : b);
+    }
+  }
+
   Future<void> _save() async {
     try {
+      _deriveNumericCriteria();
       await Api.saveStaffCriteria(_staffUni, d);
       if (!mounted) return;
       toast(context, 'Criteria saved');
@@ -4789,6 +4915,18 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
     );
   }
 
+  /// Averages the cohorts' percentages into d['C12'] so alumni-network
+  /// strength actually feeds TOPSIS — the per-cohort list itself is
+  /// display-only, only the average is a scored criterion.
+  void _syncC12() {
+    final cohorts = List<Map>.from(d['cohorts'] ?? const []);
+    final pcts = cohorts
+        .map((c) => c['pct'] is num ? (c['pct'] as num).toDouble() : double.tryParse('${c['pct']}'))
+        .whereType<double>().toList();
+    if (pcts.isEmpty) { d.remove('C12'); return; }
+    d['C12'] = double.parse((pcts.reduce((a, b) => a + b) / pcts.length).toStringAsFixed(2));
+  }
+
   Widget _cohortEditor() {
     final list = List<Map<String, dynamic>>.from(d['cohorts'] ?? const []);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -4800,7 +4938,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
         return Chip(
           label: Text('${c['period']} — ${c['pct']}%', style: const TextStyle(fontSize: 12)),
           backgroundColor: const Color(0xFFF1EBE0),
-          onDeleted: () => setState(() => (d['cohorts'] as List).removeAt(i)),
+          onDeleted: () => setState(() { (d['cohorts'] as List).removeAt(i); _syncC12(); }),
         );
       })),
       const SizedBox(height: 10),
@@ -4822,6 +4960,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
               (d['cohorts'] as List).add({'period': period, 'pct': double.tryParse(pct) ?? pct});
               _cohortPeriodCtl.clear();
               _cohortPctCtl.clear();
+              _syncC12();
             });
           },
         ),
@@ -5028,6 +5167,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
               Expanded(child: _stat('${studentCount ?? '—'}', 'Students', const Color(0xFF2A5C8F))),
             ]),
             const SizedBox(height: 18),
+            const _UniversityPopularityChart(),
+            const SizedBox(height: 18),
             _card(context, 'Staff approvals', 'Confirm, deny, suspend or remove university staff',
                 Icons.verified_user_outlined, const AdminApprovalsScreen(), badge: pendingCount,
                 bg: const Color(0xFFF7E4D3), fg: const Color(0xFFC25A1F)),
@@ -5095,6 +5236,149 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ]),
         ),
       );
+}
+
+/// Pie chart of what share of A2 graduates' most recent ranked list included
+/// each university — colors reuse C.uni(abbr) so they match every other
+/// university reference in the app. Tap a slice or a legend entry for a
+/// small "ABBR: NN%" detail popup (no hover — this app also targets touch).
+class _UniversityPopularityChart extends StatefulWidget {
+  const _UniversityPopularityChart();
+  @override
+  State<_UniversityPopularityChart> createState() => _UniversityPopularityChartState();
+}
+
+class _UniversityPopularityChartState extends State<_UniversityPopularityChart> {
+  Map<String, dynamic>? data;
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    Api.universityPopularity().then((v) {
+      if (mounted) setState(() { data = v; loading = false; });
+    }).catchError((_) { if (mounted) setState(() => loading = false); });
+  }
+
+  void _showDetail(Map u) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 14, height: 14,
+              decoration: BoxDecoration(color: C.uni('${u['abbr']}'), shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text('${u['abbr']}: ${(u['pct'] as num).toStringAsFixed(0)}%',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        ]),
+        content: Text(
+            '${u['name']}\n${u['count']} of ${data!['totalStudents']} graduate${data!['totalStudents'] == 1 ? '' : 's'} had this university in their latest ranked list.',
+            style: const TextStyle(color: C.muted, fontSize: 12.5, height: 1.4)),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('UNIVERSITY POPULARITY', style: TextStyle(
+            fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: C.muted)),
+        const SizedBox(height: 4),
+        const Text('Share of A2 graduates whose latest ranked list included each university.',
+            style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
+        const SizedBox(height: 14),
+        if (loading)
+          const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: C.green)))
+        else if (data == null)
+          const Text('Could not load popularity data.', style: TextStyle(color: C.muted, fontSize: 12))
+        else if ((data!['totalStudents'] as int) == 0)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Text('No A2 graduates have ranked universities yet.', style: TextStyle(color: C.muted, fontSize: 12)),
+          )
+        else
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            GestureDetector(
+              onTapUp: (details) {
+                final unis = List<Map>.from(data!['universities'] as List);
+                // localPosition is already relative to this GestureDetector,
+                // which is sized exactly to the CustomPaint below it.
+                final local = details.localPosition;
+                const size = 160.0;
+                const center = Offset(size / 2, size / 2);
+                final dx = local.dx - center.dx, dy = local.dy - center.dy;
+                final dist = math.sqrt(dx * dx + dy * dy);
+                if (dist > size / 2) return;
+                var angle = math.atan2(dy, dx) + math.pi / 2;
+                if (angle < 0) angle += 2 * math.pi;
+                double cum = 0;
+                for (final u in unis) {
+                  final pct = (u['pct'] as num).toDouble();
+                  final sweep = pct / 100 * 2 * math.pi;
+                  if (sweep <= 0) continue;
+                  if (angle >= cum && angle < cum + sweep) { _showDetail(u); return; }
+                  cum += sweep;
+                }
+              },
+              child: CustomPaint(
+                size: const Size(160, 160),
+                painter: _PiePainter(List<Map>.from(data!['universities'] as List)),
+              ),
+            ),
+            const SizedBox(width: 18),
+            Expanded(
+              child: Wrap(spacing: 12, runSpacing: 10, children: List<Map>.from(data!['universities'] as List).map((u) {
+                return GestureDetector(
+                  onTap: () => _showDetail(u),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Container(width: 10, height: 10,
+                        decoration: BoxDecoration(color: C.uni('${u['abbr']}'), shape: BoxShape.circle)),
+                    const SizedBox(width: 6),
+                    Text('${u['abbr']} · ${(u['pct'] as num).toStringAsFixed(0)}%',
+                        style: const TextStyle(fontSize: 11.5, color: C.ink, fontWeight: FontWeight.w600)),
+                  ]),
+                );
+              }).toList()),
+            ),
+          ]),
+      ]),
+    );
+  }
+}
+
+class _PiePainter extends CustomPainter {
+  final List<Map> universities;
+  _PiePainter(this.universities);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = math.min(size.width, size.height) / 2;
+    double startAngle = -math.pi / 2;
+    bool any = false;
+    for (final u in universities) {
+      final pct = (u['pct'] as num).toDouble();
+      final sweep = pct / 100 * 2 * math.pi;
+      if (sweep <= 0) continue;
+      any = true;
+      final paint = Paint()..color = C.uni('${u['abbr']}')..style = PaintingStyle.fill;
+      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true, paint);
+      startAngle += sweep;
+    }
+    if (!any) {
+      final paint = Paint()..color = C.sand..style = PaintingStyle.fill;
+      canvas.drawCircle(center, radius, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PiePainter oldDelegate) => oldDelegate.universities != universities;
 }
 
 /// ---- Admin: staff approvals -----------------------------------------------
