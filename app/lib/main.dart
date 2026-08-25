@@ -720,9 +720,17 @@ class UniMatchApp extends StatelessWidget {
         ),
       ),
       home: const OnboardingScreen(),
+      navigatorObservers: [routeObserver],
     );
   }
 }
+
+/// Lets a screen refresh itself when it becomes visible again after a
+/// pushed route above it is popped (e.g. StaffCriteriaScreen re-reading
+/// campuses after returning from Campuses & programmes) — more reliable
+/// than awaiting a specific Navigator.push's Future, which doesn't fire on
+/// every way a route can be left (e.g. the browser back button on web).
+final RouteObserver<PageRoute> routeObserver = RouteObserver<PageRoute>();
 
 /// Prototype display font (Bricolage Grotesque) for headlines.
 TextStyle head(double size, {Color color = C.ink, FontWeight weight = FontWeight.w600}) =>
@@ -4468,7 +4476,7 @@ const Set<String> _coveredCriteriaCodes = {
   'C25', 'C26',
 };
 
-class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
+class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAware {
   Map<String, dynamic> d = {};
   List<Map<String, dynamic>> otherCriteria = [];
   bool loading = true;
@@ -4494,6 +4502,54 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
     _load();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    routeObserver.subscribe(this, ModalRoute.of(context) as PageRoute);
+  }
+
+  @override
+  void didPopNext() {
+    // Fires whenever a route pushed on top of this one (e.g. Campuses &
+    // programmes, or the C09 pin popup) is popped, however it was left.
+    // Only re-reads the campus/programme list — NOT the full criteria blob,
+    // since pins placed via the popup live only in local state (`d`) until
+    // the main Save button is pressed; overwriting `d` here would silently
+    // discard an in-progress, unsaved pin the moment its popup closes.
+    _refreshCampuses();
+  }
+
+  Future<void> _refreshCampuses() async {
+    try {
+      final data = await Api.staffData(_staffUni);
+      final list = (data['campuses'] as List?) ?? [];
+      final newCampuses = list.map<Map<String, dynamic>>((c) =>
+          {'name': c['name'] ?? '', 'depts': List<String>.from(c['depts'] ?? [])}).toList();
+      final hasProgrammes = ((data['programmes'] as List?) ?? []).isNotEmpty;
+      if (!mounted) return;
+      setState(() {
+        _campuses = newCampuses;
+        _hasProgrammes = hasProgrammes;
+        // Keep the current selection if it still exists; otherwise fall
+        // back to the first campus rather than silently resetting a
+        // selection the staff is actively working with.
+        if (_activeCampus == null || !_campuses.any((c) => c['name'] == _activeCampus)) {
+          _activeCampus = _campuses.isNotEmpty ? _campuses[0]['name'] as String : null;
+        }
+        // Give any newly added campus an empty pin slot, matching what
+        // _normCampusPins() does on first load.
+        final pins = (d['campusPins'] as Map?) ?? <String, dynamic>{};
+        for (final c in _campuses) {
+          final name = c['name'] as String;
+          if (pins[name] is! Map) {
+            pins[name] = {'schoolLocation': null, 'busStops': <Map>[], 'motoStops': <Map>[]};
+          }
+        }
+        d['campusPins'] = pins;
+      });
+    } catch (_) {}
+  }
+
   Future<void> _load() async {
     try {
       final data = await Api.staffData(_staffUni);
@@ -4516,6 +4572,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
 
   @override
   void dispose() {
+    routeObserver.unsubscribe(this);
     _cohortPeriodCtl.dispose();
     _cohortPctCtl.dispose();
     _partnerSchoolCtl.dispose();
@@ -4891,9 +4948,10 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                         style: const TextStyle(color: C.muted, fontSize: 12.5, height: 1.4),
                       ),
                       const SizedBox(height: 20),
-                      primaryButton('Go to Campuses & programmes', () async {
-                        await Navigator.push(context, MaterialPageRoute(builder: (_) => const StaffCampusesScreen()));
-                        _load();
+                      primaryButton('Go to Campuses & programmes', () {
+                        // didPopNext() refreshes the campus/programme list
+                        // automatically once this route is back on top.
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => const StaffCampusesScreen()));
                       }),
                     ]),
                   ),
