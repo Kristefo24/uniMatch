@@ -4519,13 +4519,23 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
     _refreshCampuses();
   }
 
+  // True if there's anything for an A2 graduate to actually see: either an
+  // explicitly named programme, or a campus with at least one department
+  // assigned — a department with no named programme still counts (the
+  // department name itself becomes the programme, per listProgrammes()'s
+  // synthetic-programme fallback server-side) so staff who use that
+  // shortcut aren't blocked here forever.
+  bool _computeHasProgrammes(List<Map<String, dynamic>> campuses, List? rawProgrammes) =>
+      (rawProgrammes ?? const []).isNotEmpty ||
+      campuses.any((c) => (c['depts'] as List).isNotEmpty);
+
   Future<void> _refreshCampuses() async {
     try {
       final data = await Api.staffData(_staffUni);
       final list = (data['campuses'] as List?) ?? [];
       final newCampuses = list.map<Map<String, dynamic>>((c) =>
           {'name': c['name'] ?? '', 'depts': List<String>.from(c['depts'] ?? [])}).toList();
-      final hasProgrammes = ((data['programmes'] as List?) ?? []).isNotEmpty;
+      final hasProgrammes = _computeHasProgrammes(newCampuses, data['programmes'] as List?);
       if (!mounted) return;
       setState(() {
         _campuses = newCampuses;
@@ -4557,7 +4567,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
       final list = (data['campuses'] as List?) ?? [];
       _campuses = list.map<Map<String, dynamic>>((c) =>
           {'name': c['name'] ?? '', 'depts': List<String>.from(c['depts'] ?? [])}).toList();
-      _hasProgrammes = ((data['programmes'] as List?) ?? []).isNotEmpty;
+      _hasProgrammes = _computeHasProgrammes(_campuses, data['programmes'] as List?);
     } catch (_) {}
     try {
       final all = await Api.criteria();
