@@ -41,12 +41,6 @@ final String kBaseUrl = kUseHosted
     ? kApiUrl
     : (kIsWeb ? 'http://localhost:4000' : 'http://10.0.2.2:4000');
 
-// Known seeded university ids (see server/index.js seedStore)
-const List<String> kUniversityIds = [
-  'uni-uok', 'uni-eau', 'uni-alu',
-  'uni-auca', 'uni-urcmhs', 'uni-kepler', 'uni-ulk',
-];
-
 // Icon + universities-count metadata for the department grid.
 /// Keyword-based icon lookup shared by department and programme cards — real
 /// department/programme names vary a lot (see seed.js), so this matches on
@@ -254,7 +248,8 @@ class Api {
     double? budgetMin, double? budgetMax,
   }) async {
     final res = await _post('/rank', {
-      'universityIds': kUniversityIds,
+      // No universityIds -> server scores every live university, so a
+      // newly admin-added one is rankable immediately, no rebuild needed.
       'criteria': criteria,
       if (preferredReligion != null) 'preferredReligion': preferredReligion,
       if (dept != null) 'dept': dept,
@@ -278,8 +273,10 @@ class Api {
 
   /// All universities (id, abbr, name) — reuses /rank with no criteria so the
   /// signup dropdown and pickers can list them without a dedicated endpoint.
+  /// No universityIds filter -> always every live university, admin
+  /// add/remove reflected immediately.
   static Future<List<dynamic>> universities() async {
-    final res = await _post('/rank', {'universityIds': kUniversityIds, 'criteria': []});
+    final res = await _post('/rank', {'criteria': []});
     return List<dynamic>.from(res['ranked'] ?? []);
   }
 
@@ -1780,6 +1777,7 @@ class _CompareScreenState extends State<CompareScreen> {
   final Map<String, Map<String, dynamic>> _staffCache = {};
   List<Map<String, dynamic>> _allCriteria = [];
   Map<String, String> _labelByCode = {};
+  List<dynamic> _allProgrammes = [];
 
   @override
   void initState() {
@@ -1787,9 +1785,15 @@ class _CompareScreenState extends State<CompareScreen> {
     Api.criteria().then((list) {
       if (!mounted) return;
       setState(() {
-        _allCriteria = list.map((c) => Map<String, dynamic>.from(c)).toList();
+        // C03/C04/C24 are never staff-set (see _autoCriteriaCodes) — never
+        // show them to students.
+        _allCriteria = list.map((c) => Map<String, dynamic>.from(c))
+            .where((c) => !_autoCriteriaCodes.contains(c['code'])).toList();
         _labelByCode = { for (final c in _allCriteria) c['code'] as String: c['label'] as String };
       });
+    }).catchError((_) {});
+    Api.programmes(null).then((list) {
+      _allProgrammes = list;
     }).catchError((_) {});
     Api.universities().then((list) async {
       if (!mounted) return;
@@ -1895,10 +1899,28 @@ class _CompareScreenState extends State<CompareScreen> {
                         child: Text(entry.value.toUpperCase(), style: TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor)),
                       ),
-                      ...items.map((c) {
+                      ...items
+                          .map((c) {
+                            final code = c['code'] as String;
+                            // C07 is always live-computed against the home
+                            // pin, never a stale/replayed value — both
+                            // sides share the same Session.homeLat/homeLng
+                            // null-check, so they're blank together or
+                            // numeric together, never mismatched.
+                            final l = code == 'C07'
+                                ? (ld != null ? resolveHomeDistanceKm(ld, _allProgrammes) : null)
+                                : (lv[code] ?? ls[code]);
+                            final r = code == 'C07'
+                                ? (rd != null ? resolveHomeDistanceKm(rd, _allProgrammes) : null)
+                                : (rv[code] ?? rs[code]);
+                            return MapEntry(c, [l, r]);
+                          })
+                          .where((e) => e.value[0] != null || e.value[1] != null)
+                          .map((e) {
+                        final c = e.key;
                         final code = c['code'] as String;
-                        final l = lv[code] ?? ls[code];
-                        final r = rv[code] ?? rs[code];
+                        final l = e.value[0];
+                        final r = e.value[1];
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           padding: const EdgeInsets.all(12),
@@ -1962,9 +1984,10 @@ Widget _heroStat(String value, String label) => Expanded(
 Widget _heroDiv() => Container(width: 1, height: 34, color: const Color(0x33F5E7B8), margin: const EdgeInsets.symmetric(horizontal: 12));
 
 /// Great-circle distance in km between two lat/lng points (Haversine).
-/// Mirrors server/topsis.js's haversineKm — used client-side only for live
-/// staff-facing preview; the server recomputes and persists the
-/// authoritative value on save.
+/// Mirrors server/topsis.js's haversineKm — used client-side for the staff
+/// pin-map live preview and for live-computing a student's distance from
+/// home (see resolveHomeDistanceKm below); the server is still authoritative
+/// wherever ranking itself is computed.
 double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   const r = 6371.0;
   final dLat = (lat2 - lat1) * math.pi / 180;
@@ -1972,6 +1995,101 @@ double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
       math.cos(lat1 * math.pi / 180) * math.cos(lat2 * math.pi / 180) * math.sin(dLon / 2) * math.sin(dLon / 2);
   return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+}
+
+/// Distance from the student's home pin to whichever campus is actually
+/// relevant to them — mirrors server/index.js's resolveCampusForUni exactly:
+/// exact programme's own campus > single/nearest dept-offering campus >
+/// nearest campus overall (when the uni doesn't offer their dept, or no
+/// dept is chosen at all — e.g. checking a uni their ranking didn't
+/// recommend). No home pin -> null, never a stale/fabricated number.
+double? resolveHomeDistanceKm(Map<String, dynamic> uni, List<dynamic> allProgrammes) {
+  if (Session.homeLat == null || Session.homeLng == null) return null;
+  final campuses = List<Map>.from(uni['campuses'] ?? const []);
+  final campusPins = Map<String, dynamic>.from(uni['campusPins'] ?? const {});
+
+  LatLng? pinOf(String name) {
+    final p = campusPins[name];
+    final school = p is Map ? p['schoolLocation'] : null;
+    if (school is! Map) return null;
+    return LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble());
+  }
+
+  String? nearest(List<Map> among) {
+    String? best;
+    double bestKm = double.infinity;
+    for (final c in among) {
+      final pt = pinOf(c['name'] as String);
+      if (pt == null) continue;
+      final km = haversineKm(Session.homeLat!, Session.homeLng!, pt.latitude, pt.longitude);
+      if (km < bestKm) { bestKm = km; best = c['name'] as String; }
+    }
+    return best;
+  }
+
+  String? campusName;
+  // Tier 1: exact programme's own campus.
+  if (Session.selectedProgramme != null) {
+    final exact = allProgrammes.cast<Map>().firstWhere(
+      (p) => p['universityId'] == uni['id'] && p['name'] == Session.selectedProgramme && ('${p['campus'] ?? ''}').isNotEmpty,
+      orElse: () => {});
+    if (exact.isNotEmpty) campusName = exact['campus'] as String;
+  }
+  // Tier 2: campus(es) offering the selected dept.
+  if (campusName == null && Session.selectedDept != null) {
+    final offering = campuses.where((c) => List<String>.from(c['depts'] ?? const []).contains(Session.selectedDept)).toList();
+    if (offering.length == 1) {
+      campusName = offering[0]['name'] as String;
+    } else if (offering.length > 1) {
+      campusName = nearest(offering) ?? offering[0]['name'] as String;
+    }
+  }
+  // Tier 3: not offering the selected dept (or no dept chosen at all) -> nearest campus overall.
+  campusName ??= nearest(campuses);
+
+  final pt = campusName != null ? pinOf(campusName) : null;
+  if (pt != null) return haversineKm(Session.homeLat!, Session.homeLng!, pt.latitude, pt.longitude);
+  // Legacy single-pin universities with no per-campus data at all.
+  final legacy = uni['schoolLocation'];
+  if (legacy is Map) {
+    return haversineKm(Session.homeLat!, Session.homeLng!, (legacy['lat'] as num).toDouble(), (legacy['lng'] as num).toDouble());
+  }
+  return null;
+}
+
+/// Resolves what to show a student for one criterion code on DetailScreen —
+/// null means "staff never set this," which the caller hides entirely
+/// rather than rendering a placeholder.
+dynamic _valueForCode(String code, Map vals, Map staffAnswers, num? kmHome) {
+  switch (code) {
+    case 'C07':
+      return kmHome;
+    case 'C12':
+      return vals['C12'] != null ? '${(vals['C12'] as num).toStringAsFixed(1)}%' : null;
+    case 'C14':
+      return staffAnswers['library'];
+    case 'C16':
+      return staffAnswers['sporting'];
+    case 'C17':
+      return staffAnswers['health'];
+    case 'C23':
+      return (staffAnswers['minGrade'] as String?)?.trim().isNotEmpty == true ? staffAnswers['minGrade'] : null;
+    case 'C25':
+      // Unset (staff never touched it) -> null, hidden like everything
+      // else. Explicitly false ("not religious-based") still shows 'None'
+      // as a real answer.
+      if (staffAnswers['religiousBased'] == null) return null;
+      return staffAnswers['religiousBased'] == true ? (staffAnswers['religion'] ?? 'None') : 'None';
+    case 'C26':
+      final modes = <String>[
+        if (staffAnswers['modeDay'] == true) 'Day',
+        if (staffAnswers['modeEvening'] == true) 'Evening',
+        if (staffAnswers['modeWeekend'] == true) 'Weekend',
+      ];
+      return modes.isEmpty ? null : modes.join(', ');
+    default:
+      return vals[code] ?? staffAnswers[code];
+  }
 }
 
 /// Prettify a raw staff answer key (e.g. "partnerSchools" → "Partner schools").
@@ -3200,6 +3318,7 @@ class _DetailScreenState extends State<DetailScreen> {
   List<Map<String, dynamic>> allCriteria = [];
   bool showAdditionalDetails = false;
   int? programmeCount;
+  List<dynamic> allProgrammes = [];
 
   @override
   void initState() {
@@ -3220,6 +3339,7 @@ class _DetailScreenState extends State<DetailScreen> {
       });
     }).catchError((_) {});
     Api.programmes(null).then((list) {
+      allProgrammes = list;
       final n = list.where((p) => (p as Map)['universityId'] == widget.id).length;
       if (mounted) setState(() => programmeCount = n);
     }).catchError((_) {});
@@ -3297,25 +3417,21 @@ class _DetailScreenState extends State<DetailScreen> {
           final crest = C.uni(abbr);
           final avgRating = u['avgRating'] as num?;
           final ratingCount = (u['ratingCount'] as num?)?.toInt() ?? 0;
-          // Real distance only — computed server-side (Haversine) from the
-          // student's picked home location the last time they ranked. No
-          // home location set yet -> blank, never a fabricated number.
-          final kmHome = (Session.homeLat == null || Session.homeLng == null || Session.lastRanking == null)
-              ? null
-              : () {
-                  for (final r in Session.lastRanking!) {
-                    if ((r as Map)['id'] == u['id']) return (r['vals'] as Map?)?['C07'];
-                  }
-                  return null;
-                }();
+          // Live-computed from the student's home pin against whichever
+          // campus is relevant to them — never a stale/replayed number. No
+          // home pin set -> blank.
+          final kmHome = resolveHomeDistanceKm(u, allProgrammes);
 
-          // Full 26-criteria catalogue, grouped by category, value from vals
+          // Full criteria catalogue, grouped by category, value from vals
           // or staff answers if present, otherwise blank — never fabricated.
           final codeSet = allCriteria.map((c) => c['code']).toSet();
           // C08 (on-campus accommodation) already has its own dedicated
           // ACCOMMODATION info card above — don't repeat it in the
-          // categorized breakdown.
-          final displayCriteria = allCriteria.where((c) => c['code'] != 'C08').toList();
+          // categorized breakdown. C03/C04/C24 are never staff-set (see
+          // _autoCriteriaCodes) and shouldn't surface to students at all.
+          final displayCriteria = allCriteria
+              .where((c) => c['code'] != 'C08' && !_autoCriteriaCodes.contains(c['code']))
+              .toList();
           final categories = <String>[];
           final byCategory = <String, List<Map<String, dynamic>>>{};
           for (final c in displayCriteria) {
@@ -3359,7 +3475,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     _heroDiv(),
                     _heroStat(programmeCount != null ? '$programmeCount' : '—', 'PROGRAMMES'),
                     _heroDiv(),
-                    _heroStat(kmHome != null ? '${kmHome is num ? kmHome.toStringAsFixed(1) : kmHome}' : '—', 'KM HOME'),
+                    _heroStat(kmHome != null ? kmHome.toStringAsFixed(1) : '—', 'KM HOME'),
                   ]),
                 ]),
               ),
@@ -3415,34 +3531,13 @@ class _DetailScreenState extends State<DetailScreen> {
                       child: Text(entry.value.toUpperCase(), style: TextStyle(
                           fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor)),
                     ),
-                    ...items.map((c) {
+                    ...items
+                        .map((c) => MapEntry(c, _valueForCode(c['code'] as String, vals, staffAnswers, kmHome)))
+                        .where((e) => e.value != null)
+                        .map((e) {
+                      final c = e.key;
                       final code = c['code'] as String;
-                      final value = code == 'C12'
-                          ? (vals['C12'] != null ? '${(vals['C12'] as num).toStringAsFixed(1)}%' : null)
-                          : code == 'C14'
-                              ? staffAnswers['library']
-                              : code == 'C16'
-                                  ? staffAnswers['sporting']
-                                  : code == 'C17'
-                                      ? staffAnswers['health']
-                                      : code == 'C23'
-                                          ? ((staffAnswers['minGrade'] as String?)?.trim().isNotEmpty == true
-                                              ? staffAnswers['minGrade']
-                                              : null)
-                                          : code == 'C25'
-                                              ? (staffAnswers['religiousBased'] == true
-                                                  ? (staffAnswers['religion'] ?? 'None')
-                                                  : 'None')
-                                              : code == 'C26'
-                                                  ? (() {
-                                                      final modes = <String>[
-                                                        if (staffAnswers['modeDay'] == true) 'Day',
-                                                        if (staffAnswers['modeEvening'] == true) 'Evening',
-                                                        if (staffAnswers['modeWeekend'] == true) 'Weekend',
-                                                      ];
-                                                      return modes.isEmpty ? null : modes.join(', ');
-                                                    })()
-                                                  : vals[code] ?? staffAnswers[code];
+                      final value = e.value;
                       final names = code == 'C02'
                           ? List<String>.from(staffAnswers['partnerSchools'] ?? const [])
                           : code == 'C11'
@@ -4139,7 +4234,7 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   // (any 2 of them together qualify as valid principal passes)
   Map<String, Map<String, List<String>>> combos = {};
   List<String> programmes = [];
-  Set<String> expanded = {};
+  String? expandedProgramme; // only one panel open at a time
   List<dynamic> _catalogue = []; // admin-managed combination codes + their base subjects
   bool loading = true;
 
@@ -4173,7 +4268,9 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   }
 
   Future<void> _save() async {
-    try { await Api.saveStaffCombos(_staffUni, combos); if (mounted) toast(context, 'Saved'); }
+    // Saves live on every toggle — no toast here, since a run of chip taps
+    // would otherwise pop it repeatedly and look broken.
+    try { await Api.saveStaffCombos(_staffUni, combos); }
     catch (e) { if (mounted) toast(context, e.toString()); }
   }
 
@@ -4246,7 +4343,7 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                     const SizedBox(height: 14),
                     ...programmes.map((p) {
                       final set = combos[p]!.entries.where((e) => subjectPairs(e.value).isNotEmpty).length;
-                      final isOpen = expanded.contains(p);
+                      final isOpen = expandedProgramme == p;
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(14),
@@ -4254,7 +4351,7 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                             color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           GestureDetector(
-                            onTap: () => setState(() => isOpen ? expanded.remove(p) : expanded.add(p)),
+                            onTap: () => setState(() => expandedProgramme = isOpen ? null : p),
                             child: Row(children: [
                               Expanded(child: Text(p, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink))),
                               Text('$set combination${set == 1 ? '' : 's'} set',
