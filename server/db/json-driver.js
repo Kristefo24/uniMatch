@@ -2,12 +2,25 @@
 // Implements the repository interface consumed by index.js.
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require('bcryptjs');
 const { freshStore } = require('../seed');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const FILE = path.join(DATA_DIR, 'store.json');
 
 let db;
+
+// One-time (per row) upgrade of any password still stored in plain text
+// (from before hashing was added) to a bcrypt hash. Idempotent.
+function migratePlainTextPasswords() {
+  let changed = false;
+  for (const u of db.users) {
+    if (/^\$2[aby]\$/.test(u.password || '')) continue;
+    u.password = bcrypt.hashSync(u.password, 10);
+    changed = true;
+  }
+  if (changed) save();
+}
 
 function load() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -26,6 +39,7 @@ function load() {
     db = freshStore();
     save();
   }
+  migratePlainTextPasswords();
 }
 function save() {
   fs.writeFileSync(FILE, JSON.stringify(db, null, 2));

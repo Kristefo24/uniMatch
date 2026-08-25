@@ -1536,7 +1536,7 @@ class _StudentHomeState extends State<StudentHome> {
                 crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
                 mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.55,
                 children: [
-                  _action('Set criteria', '26 criteria',
+                  _action('Set criteria', '23 criteria',
                       Icons.tune, const Color(0xFFC7EBD8), C.green, _toDept),
                   _action('Shortlist', 'Saved', Icons.bookmark_border, const Color(0xFFF7D9C4), const Color(0xFFC25A1F),
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortlistScreen()))),
@@ -1785,10 +1785,7 @@ class _CompareScreenState extends State<CompareScreen> {
     Api.criteria().then((list) {
       if (!mounted) return;
       setState(() {
-        // C03/C04/C24 are never staff-set (see _autoCriteriaCodes) — never
-        // show them to students.
-        _allCriteria = list.map((c) => Map<String, dynamic>.from(c))
-            .where((c) => !_autoCriteriaCodes.contains(c['code'])).toList();
+        _allCriteria = list.map((c) => Map<String, dynamic>.from(c)).toList();
         _labelByCode = { for (final c in _allCriteria) c['code'] as String: c['label'] as String };
       });
     }).catchError((_) {});
@@ -1899,28 +1896,19 @@ class _CompareScreenState extends State<CompareScreen> {
                         child: Text(entry.value.toUpperCase(), style: TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor)),
                       ),
-                      ...items
-                          .map((c) {
-                            final code = c['code'] as String;
-                            // C07 is always live-computed against the home
-                            // pin, never a stale/replayed value — both
-                            // sides share the same Session.homeLat/homeLng
-                            // null-check, so they're blank together or
-                            // numeric together, never mismatched.
-                            final l = code == 'C07'
-                                ? (ld != null ? resolveHomeDistanceKm(ld, _allProgrammes) : null)
-                                : (lv[code] ?? ls[code]);
-                            final r = code == 'C07'
-                                ? (rd != null ? resolveHomeDistanceKm(rd, _allProgrammes) : null)
-                                : (rv[code] ?? rs[code]);
-                            return MapEntry(c, [l, r]);
-                          })
-                          .where((e) => e.value[0] != null || e.value[1] != null)
-                          .map((e) {
-                        final c = e.key;
+                      ...items.map((c) {
                         final code = c['code'] as String;
-                        final l = e.value[0];
-                        final r = e.value[1];
+                        // C07 is always live-computed against the home
+                        // pin, never a stale/replayed value — both
+                        // sides share the same Session.homeLat/homeLng
+                        // null-check, so they're blank together or
+                        // numeric together, never mismatched.
+                        final l = code == 'C07'
+                            ? (ld != null ? resolveHomeDistanceKm(ld, _allProgrammes) : null)
+                            : (lv[code] ?? ls[code]);
+                        final r = code == 'C07'
+                            ? (rd != null ? resolveHomeDistanceKm(rd, _allProgrammes) : null)
+                            : (rv[code] ?? rs[code]);
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           padding: const EdgeInsets.all(12),
@@ -3427,11 +3415,8 @@ class _DetailScreenState extends State<DetailScreen> {
           final codeSet = allCriteria.map((c) => c['code']).toSet();
           // C08 (on-campus accommodation) already has its own dedicated
           // ACCOMMODATION info card above — don't repeat it in the
-          // categorized breakdown. C03/C04/C24 are never staff-set (see
-          // _autoCriteriaCodes) and shouldn't surface to students at all.
-          final displayCriteria = allCriteria
-              .where((c) => c['code'] != 'C08' && !_autoCriteriaCodes.contains(c['code']))
-              .toList();
+          // categorized breakdown.
+          final displayCriteria = allCriteria.where((c) => c['code'] != 'C08').toList();
           final categories = <String>[];
           final byCategory = <String, List<Map<String, dynamic>>>{};
           for (final c in displayCriteria) {
@@ -3531,13 +3516,9 @@ class _DetailScreenState extends State<DetailScreen> {
                       child: Text(entry.value.toUpperCase(), style: TextStyle(
                           fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor)),
                     ),
-                    ...items
-                        .map((c) => MapEntry(c, _valueForCode(c['code'] as String, vals, staffAnswers, kmHome)))
-                        .where((e) => e.value != null)
-                        .map((e) {
-                      final c = e.key;
+                    ...items.map((c) {
                       final code = c['code'] as String;
-                      final value = e.value;
+                      final value = _valueForCode(code, vals, staffAnswers, kmHome);
                       final names = code == 'C02'
                           ? List<String>.from(staffAnswers['partnerSchools'] ?? const [])
                           : code == 'C11'
@@ -4461,13 +4442,6 @@ const Set<String> _coveredCriteriaCodes = {
   'C25', 'C26',
 };
 
-// These are recognized criteria but are never staff-entered numbers — C03
-// (programme availability) and C24 (subject combinations) come from the
-// programme/combo data staff already enters elsewhere, and C04 (faculty
-// qualifications) isn't collected at all. Shown so staff can see they're
-// accounted for, but with no fillable box.
-const Set<String> _autoCriteriaCodes = {'C03', 'C04', 'C24'};
-
 class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   Map<String, dynamic> d = {};
   List<Map<String, dynamic>> otherCriteria = [];
@@ -4785,13 +4759,10 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
   }
 
   // Every criterion a graduate can actually be ranked on must be filled —
-  // C07 (server-computed from home distance) and the auto codes (C03/C04/C24,
-  // never staff-entered) are the only exceptions.
+  // C07 (server-computed from home distance) is the only exception.
   Set<String> get _requiredCriteriaCodes => {
         ..._coveredCriteriaCodes.where((c) => c != 'C07'),
-        ...otherCriteria
-            .where((c) => !_autoCriteriaCodes.contains(c['code']))
-            .map((c) => c['code'] as String),
+        ...otherCriteria.map((c) => c['code'] as String),
       };
 
   String _labelFor(String code) => _criteriaByCode[code]?['label'] ?? code;
@@ -5077,9 +5048,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
                   const Text('These criteria don\'t have a dedicated field yet — enter a number for each.',
                       style: TextStyle(color: C.muted, fontSize: 11)),
                   const SizedBox(height: 8),
-                  ...otherCriteria.map((c) => _autoCriteriaCodes.contains(c['code'])
-                      ? _autoField('${c['label']} · ${c['code']}')
-                      : _numField('${c['label']} · ${c['code']}', c['code'] as String)),
+                  ...otherCriteria.map((c) => _numField('${c['label']} · ${c['code']}', c['code'] as String)),
                 ],
               ],
             ),
@@ -5104,18 +5073,6 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
             decoration: fieldDeco('Enter a number'),
             onChanged: (v) => d[key] = double.tryParse(v.trim()) ?? d[key],
           ),
-        ]),
-      );
-
-  // Read-only row for criteria staff never fill in directly (C03/C04/C24) —
-  // shown so they can see it's a recognized criterion, with no text box.
-  Widget _autoField(String label) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
-          const SizedBox(height: 4),
-          const Text('Determined automatically — not staff-entered.',
-              style: TextStyle(color: C.muted, fontSize: 11, fontStyle: FontStyle.italic)),
         ]),
       );
 

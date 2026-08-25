@@ -2,7 +2,8 @@
 // Requires: npm install mysql2   and a `unimatch` database created from schema.sql.
 const path = require('path');
 const fs = require('fs');
-const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, COMBINATIONS, STUDENTS } = require('../seed');
+const bcrypt = require('bcryptjs');
+const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, COMBINATIONS, STUDENTS, DEFAULT_PASSWORD_HASH } = require('../seed');
 
 let pool;
 
@@ -36,7 +37,7 @@ async function seedIfEmpty() {
   // seeded students
   for (const s of (STUDENTS || [])) {
     await p.query('INSERT INTO users (id,name,email,password,role,home) VALUES (?,?,?,?,?,?)',
-      [s.id, s.name, s.email, '123', 'student', s.home]);
+      [s.id, s.name, s.email, DEFAULT_PASSWORD_HASH, 'student', s.home]);
   }
   // evaluation criteria
   for (const c of (CRITERIA || [])) {
@@ -74,6 +75,19 @@ async function seedCombinationsIfMissing() {
   const p = await getPool();
   for (const c of COMBINATIONS) {
     await p.query('INSERT IGNORE INTO combinations (code,subjects) VALUES (?,?)', [c.code, JSON.stringify(c.subjects)]);
+  }
+}
+
+// Runs on every boot — one-time (per row) upgrade of any password still
+// stored in plain text (from before hashing was added) to a bcrypt hash.
+// Idempotent: a row already hashed is left untouched.
+async function migratePlainTextPasswords() {
+  const p = await getPool();
+  const [rows] = await p.query('SELECT id, password FROM users');
+  for (const row of rows) {
+    if (/^\$2[aby]\$/.test(row.password || '')) continue;
+    const hash = bcrypt.hashSync(row.password, 10);
+    await p.query('UPDATE users SET password=? WHERE id=?', [hash, row.id]);
   }
 }
 
@@ -115,6 +129,7 @@ module.exports = {
     }
     await seedIfEmpty();
     await seedCombinationsIfMissing();
+    await migratePlainTextPasswords();
   },
 
   async createUser({ name, email, password, role, universityId, track }) {

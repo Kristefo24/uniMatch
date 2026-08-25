@@ -4,10 +4,17 @@
 // reputation, etc.) is entered by real staff via StaffCriteriaScreen,
 // never pre-filled with demo numbers.
 
+const bcrypt = require('bcryptjs');
+// Passwords are always stored hashed, never plain text — this is the hash
+// for the well-known default seed password "123", computed once so every
+// default account (admin + seeded students) shares it without re-hashing
+// on every server boot.
+const DEFAULT_PASSWORD_HASH = bcrypt.hashSync('123', 10);
+
 const DEFAULT_ADMIN = {
   name: 'Kris',
   email: 'kris@unimatch.com',
-  password: '123',
+  password: DEFAULT_PASSWORD_HASH,
   role: 'admin',
 };
 
@@ -120,7 +127,7 @@ function freshStore() {
   return {
     users: [
       { id:'user-admin', ...DEFAULT_ADMIN },
-      ...STUDENTS.map(s => ({ id:s.id, name:s.name, email:s.email, password:'123', role:'student', home:s.home, suspended:false })),
+      ...STUDENTS.map(s => ({ id:s.id, name:s.name, email:s.email, password:DEFAULT_PASSWORD_HASH, role:'student', home:s.home, suspended:false })),
     ],
     universities: UNIVERSITIES,
     programmes: buildProgrammes(),
@@ -135,4 +142,4 @@ function freshStore() {
   };
 }
 
-module.exports = { DEFAULT_ADMIN, DEPARTMENTS, UNIVERSITIES, STAFF_REQUESTS, CRITERIA, COMBINATIONS, STUDENTS, freshStore, buildProgrammes };
+module.exports = { DEFAULT_ADMIN, DEPARTMENTS, UNIVERSITIES, STAFF_REQUESTS, CRITERIA, COMBINATIONS, STUDENTS, DEFAULT_PASSWORD_HASH, freshStore, buildProgrammes };

@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const db = require('./db');
 const { topsis, haversineKm } = require('./topsis');
@@ -47,7 +48,8 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch(e => {
 app.post('/signup', wrap(async (req, res) => {
   const { name, email, password, role, universityId, track } = req.body || {};
   if (!name || !email || !password) throw new Error('Name, email and password are required');
-  const user = await db.createUser({ name, email, password, role: role || 'student', universityId, track });
+  const hashed = await bcrypt.hash(password, 10);
+  const user = await db.createUser({ name, email, password: hashed, role: role || 'student', universityId, track });
   // Staff must be confirmed by an admin before they can log in — no token yet.
   if (user.role === 'staff') return res.json({ pending: true, user: { name, email, role: 'staff' } });
   res.json({ token: sign(user), user: { id: user.id, name: user.name, email: user.email, role: user.role, track: user.track || null, photo: user.photo || null } });
@@ -56,7 +58,7 @@ app.post('/signup', wrap(async (req, res) => {
 app.post('/login', wrap(async (req, res) => {
   const { email, password } = req.body || {};
   const user = await db.findUserByEmail(email || '');
-  if (!user || user.password !== password) throw new Error('Wrong email or password');
+  if (!user || !(await bcrypt.compare(password || '', user.password))) throw new Error('Wrong email or password');
   if (user.suspended) return res.status(403).json({ error: 'This account has been suspended. Contact the administrator.' });
 
   if (user.role === 'staff') {
@@ -422,7 +424,8 @@ app.post('/forgot-password', wrap(async (req, res) => {
 app.post('/reset-password', wrap(async (req, res) => {
   const { email, otp, password } = req.body || {};
   if (!email || !otp || !password) throw new Error('Email, code and new password are required');
-  await db.resetPassword(email, otp, password);
+  const hashed = await bcrypt.hash(password, 10);
+  await db.resetPassword(email, otp, hashed);
   res.json({ ok: true });
 }));
 

@@ -3,7 +3,8 @@
 // Requires: npm install pg   (pg ships with @supabase; install directly to be safe).
 const path = require('path');
 const fs = require('fs');
-const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, COMBINATIONS, STUDENTS } = require('../seed');
+const bcrypt = require('bcryptjs');
+const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, COMBINATIONS, STUDENTS, DEFAULT_PASSWORD_HASH } = require('../seed');
 
 let client;
 
@@ -32,7 +33,7 @@ async function seedIfEmpty() {
     ['user-admin', DEFAULT_ADMIN.name, DEFAULT_ADMIN.email, DEFAULT_ADMIN.password, DEFAULT_ADMIN.role]);
   for (const s of (STUDENTS || [])) {
     await q('INSERT INTO users (id,name,email,password,role,home) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING',
-      [s.id, s.name, s.email, '123', 'student', s.home]);
+      [s.id, s.name, s.email, DEFAULT_PASSWORD_HASH, 'student', s.home]);
   }
   for (const c of (CRITERIA || [])) {
     await q('INSERT INTO criteria (code,label,category,direction) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',
@@ -71,6 +72,18 @@ async function seedCombinationsIfMissing() {
   }
 }
 
+// Runs on every boot — one-time (per row) upgrade of any password still
+// stored in plain text (from before hashing was added) to a bcrypt hash.
+// Idempotent: a row already hashed is left untouched.
+async function migratePlainTextPasswords() {
+  const { rows } = await q('SELECT id, password FROM users');
+  for (const row of rows) {
+    if (/^\$2[aby]\$/.test(row.password || '')) continue;
+    const hash = bcrypt.hashSync(row.password, 10);
+    await q('UPDATE users SET password=$1 WHERE id=$2', [hash, row.id]);
+  }
+}
+
 async function hydrateUniversity(u) {
   const { rows: camps } = await q('SELECT id,name FROM campuses WHERE university_id=$1', [u.id]);
   for (const c of camps) {
@@ -104,6 +117,7 @@ module.exports = {
     await q(schema); // Postgres accepts multiple statements in one query
     await seedIfEmpty();
     await seedCombinationsIfMissing();
+    await migratePlainTextPasswords();
   },
 
   async createUser({ name, email, password, role, universityId, track }) {
