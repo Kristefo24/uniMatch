@@ -269,6 +269,23 @@ module.exports = {
   },
   async deleteCombination(code) {
     await q('DELETE FROM combinations WHERE code=$1', [code]);
+    // Cascade: every university's staff-set eligibility (programme -> code ->
+    // subjects) loses this code too, so nothing references a combination
+    // that no longer exists in the catalogue.
+    const { rows } = await q('SELECT university_id, data FROM staff_data');
+    for (const row of rows) {
+      let sd;
+      try { sd = JSON.parse(row.data); } catch { continue; }
+      if (!sd || !sd.combos || typeof sd.combos !== 'object') continue;
+      let changed = false;
+      for (const programme of Object.keys(sd.combos)) {
+        if (sd.combos[programme] && typeof sd.combos[programme] === 'object' && code in sd.combos[programme]) {
+          delete sd.combos[programme][code];
+          changed = true;
+        }
+      }
+      if (changed) await q('UPDATE staff_data SET data=$1 WHERE university_id=$2', [JSON.stringify(sd), row.university_id]);
+    }
     return { ok: true };
   },
 

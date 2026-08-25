@@ -356,7 +356,21 @@ module.exports = {
     save(); return c;
   },
   async deleteCombination(code) {
-    db.combinations = (db.combinations || []).filter(c => c.code !== code); save(); return { ok: true };
+    db.combinations = (db.combinations || []).filter(c => c.code !== code);
+    // Cascade: every university's staff-set eligibility (programme -> code ->
+    // subjects) loses this code too, so nothing references a combination
+    // that no longer exists in the catalogue.
+    db.staffData = db.staffData || {};
+    for (const sd of Object.values(db.staffData)) {
+      const combos = sd && sd.combos;
+      if (!combos || typeof combos !== 'object') continue;
+      for (const programme of Object.keys(combos)) {
+        if (combos[programme] && typeof combos[programme] === 'object') {
+          delete combos[programme][code];
+        }
+      }
+    }
+    save(); return { ok: true };
   },
 
   // ---- self-service profile update ----

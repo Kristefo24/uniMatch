@@ -306,6 +306,23 @@ module.exports = {
   async deleteCombination(code) {
     const p = await getPool();
     await p.query('DELETE FROM combinations WHERE code=?', [code]);
+    // Cascade: every university's staff-set eligibility (programme -> code ->
+    // subjects) loses this code too, so nothing references a combination
+    // that no longer exists in the catalogue.
+    const [rows] = await p.query('SELECT university_id, data FROM staff_data');
+    for (const row of rows) {
+      let sd;
+      try { sd = JSON.parse(row.data); } catch { continue; }
+      if (!sd || !sd.combos || typeof sd.combos !== 'object') continue;
+      let changed = false;
+      for (const programme of Object.keys(sd.combos)) {
+        if (sd.combos[programme] && typeof sd.combos[programme] === 'object' && code in sd.combos[programme]) {
+          delete sd.combos[programme][code];
+          changed = true;
+        }
+      }
+      if (changed) await p.query('UPDATE staff_data SET data=? WHERE university_id=?', [JSON.stringify(sd), row.university_id]);
+    }
     return { ok: true };
   },
 
