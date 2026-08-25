@@ -352,6 +352,11 @@ module.exports = {
     await p.query('UPDATE users SET suspended=? WHERE id=?', [suspended ? 1 : 0, id]);
     return { id, suspended: !!suspended };
   },
+  async deleteStudent(id) {
+    const p = await getPool();
+    await p.query("DELETE FROM users WHERE id=? AND role='student'", [id]);
+    return { ok: true };
+  },
 
   // ---- staff: own university data ----
   async _staffData(uniId) {

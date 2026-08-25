@@ -428,4 +428,8 @@ module.exports = {
     u.suspended = !!suspended; save();
     return { id: u.id, suspended: u.suspended };
   },
+  async deleteStudent(id) {
+    db.users = db.users.filter(u => !(u.id === id && u.role === 'student')); save();
+    return { ok: true };
+  },
 };

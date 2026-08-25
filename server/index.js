@@ -394,6 +394,9 @@ app.get('/admin/students', auth(), requireRole('admin'), wrap(async (_req, res) 
 app.post('/admin/students/:id/suspended', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.setStudentSuspended(req.params.id, !!(req.body && req.body.suspended)));
 }));
+app.delete('/admin/students/:id', auth(), requireRole('admin'), wrap(async (req, res) => {
+  res.json(await db.deleteStudent(req.params.id));
+}));
 
 app.get('/health', (_req, res) => res.json({ ok: true, driver: (process.env.DB_DRIVER || 'json') }));
 

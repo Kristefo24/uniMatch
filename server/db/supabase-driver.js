@@ -312,6 +312,10 @@ module.exports = {
     await q('UPDATE users SET suspended=$1 WHERE id=$2', [suspended ? 1 : 0, id]);
     return { id, suspended: !!suspended };
   },
+  async deleteStudent(id) {
+    await q("DELETE FROM users WHERE id=$1 AND role='student'", [id]);
+    return { ok: true };
+  },
 
   // ---- staff: own university data ----
   async _staffData(uniId) {
