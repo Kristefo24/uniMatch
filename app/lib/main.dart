@@ -3993,74 +3993,100 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
       context: context, isScrollControlled: true, backgroundColor: C.cream,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) => Padding(
-        padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(existing == null ? 'Add campus' : 'Edit campus',
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
-          const SizedBox(height: 16),
-          TextField(controller: name, decoration: fieldDeco('Campus name (e.g. Remera Campus)')),
-          if (existing != null) ...[
-            const SizedBox(height: 6),
-            const Text('Renaming clears this campus\'s saved map pins (school/bus/moto) — re-place them under Criteria answers afterwards.',
-                style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic, height: 1.3)),
-          ],
-          const SizedBox(height: 14),
-          const Text('Departments offered here', style: TextStyle(color: C.muted, fontSize: 12)),
-          const SizedBox(height: 8),
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            // Closed list — exactly the 8 uniform departments, no free-text
-            // additions, so every university's department taxonomy stays consistent.
-            ...kDepartments.map((d) {
-              final on = picked.contains(d);
-              return GestureDetector(
-                onTap: () => setSheet(() => on ? picked.remove(d) : picked.add(d)),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                      color: on ? C.green : Colors.white, borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: on ? C.green : C.border)),
-                  child: Text(d, style: TextStyle(color: on ? Colors.white : C.ink, fontSize: 12)),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+        // Constant size regardless of how many departments/programmes are
+        // added — the middle section scrolls internally instead of growing
+        // the whole sheet past the screen, which used to hide the title and
+        // the Save button with no way to get back to them.
+        child: SizedBox(
+          height: MediaQuery.of(ctx).size.height * 0.85,
+          child: Column(children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              child: Row(children: [
+                Expanded(
+                  child: Text(existing == null ? 'Add campus' : 'Edit campus',
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
                 ),
-              );
-            }),
-          ]),
-          if (picked.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            const Text('Programmes per department', style: TextStyle(color: C.muted, fontSize: 12)),
-            const Text('Leave a department empty and the department name itself is used as its programme.',
-                style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
-            const SizedBox(height: 10),
-            ...(picked.toList()..sort()).map((d) {
-              final progs = localProgs.putIfAbsent(d, () => []);
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
+                IconButton(
+                  icon: const Icon(Icons.close, color: C.muted),
+                  onPressed: () => Navigator.pop(ctx, false),
+                ),
+              ]),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(d, style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 12.5)),
-                  const SizedBox(height: 6),
-                  Wrap(spacing: 6, runSpacing: 6, children: [
-                    ...progs.map((name) => Chip(
-                          label: Text(name, style: const TextStyle(fontSize: 12)),
-                          backgroundColor: const Color(0xFFF1EBE0),
-                          onDeleted: () => setSheet(() => progs.remove(name)),
-                        )),
-                    ActionChip(
-                      avatar: const Icon(Icons.add, size: 16, color: C.green),
-                      label: const Text('Add programme', style: TextStyle(fontSize: 12, color: C.green)),
-                      backgroundColor: Colors.white,
-                      side: const BorderSide(color: C.border),
-                      onPressed: () async {
-                        final v = await _promptText('Programme name');
-                        if (v != null && v.trim().isNotEmpty) setSheet(() => progs.add(v.trim()));
-                      },
-                    ),
+                  TextField(controller: name, decoration: fieldDeco('Campus name (e.g. Remera Campus)')),
+                  if (existing != null) ...[
+                    const SizedBox(height: 6),
+                    const Text('Renaming clears this campus\'s saved map pins (school/bus/moto) — re-place them under Criteria answers afterwards.',
+                        style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic, height: 1.3)),
+                  ],
+                  const SizedBox(height: 14),
+                  const Text('Departments offered here', style: TextStyle(color: C.muted, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    // Closed list — exactly the 8 uniform departments, no free-text
+                    // additions, so every university's department taxonomy stays consistent.
+                    ...kDepartments.map((d) {
+                      final on = picked.contains(d);
+                      return GestureDetector(
+                        onTap: () => setSheet(() => on ? picked.remove(d) : picked.add(d)),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                              color: on ? C.green : Colors.white, borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: on ? C.green : C.border)),
+                          child: Text(d, style: TextStyle(color: on ? Colors.white : C.ink, fontSize: 12)),
+                        ),
+                      );
+                    }),
                   ]),
+                  if (picked.isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    const Text('Programmes per department', style: TextStyle(color: C.muted, fontSize: 12)),
+                    const Text('Leave a department empty and the department name itself is used as its programme.',
+                        style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                    const SizedBox(height: 10),
+                    ...(picked.toList()..sort()).map((d) {
+                      final progs = localProgs.putIfAbsent(d, () => []);
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(d, style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 12.5)),
+                          const SizedBox(height: 6),
+                          Wrap(spacing: 6, runSpacing: 6, children: [
+                            ...progs.map((name) => Chip(
+                                  label: Text(name, style: const TextStyle(fontSize: 12)),
+                                  backgroundColor: const Color(0xFFF1EBE0),
+                                  onDeleted: () => setSheet(() => progs.remove(name)),
+                                )),
+                            ActionChip(
+                              avatar: const Icon(Icons.add, size: 16, color: C.green),
+                              label: const Text('Add programme', style: TextStyle(fontSize: 12, color: C.green)),
+                              backgroundColor: Colors.white,
+                              side: const BorderSide(color: C.border),
+                              onPressed: () async {
+                                final v = await _promptText('Programme name');
+                                if (v != null && v.trim().isNotEmpty) setSheet(() => progs.add(v.trim()));
+                              },
+                            ),
+                          ]),
+                        ]),
+                      );
+                    }),
+                  ],
                 ]),
-              );
-            }),
-          ],
-          const SizedBox(height: 20),
-          primaryButton('Save campus', () => Navigator.pop(ctx, true)),
-        ]),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: primaryButton('Save campus', () => Navigator.pop(ctx, true)),
+            ),
+          ]),
+        ),
       )),
     );
     if (saved != true) return;
