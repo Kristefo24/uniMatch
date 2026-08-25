@@ -16,6 +16,7 @@ function load() {
     // Backfill fields added after an older store.json was first created.
     const base = freshStore();
     if (!db.criteria) { db.criteria = base.criteria; save(); }
+    if (!db.combinations) { db.combinations = base.combinations; save(); }
     if (!db.users.some(u => u.role === 'student')) {
       db.users.push(...base.users.filter(u => u.role === 'student')); save();
     }
@@ -336,6 +337,26 @@ module.exports = {
   },
   async deleteCriterion(code) {
     db.criteria = db.criteria.filter(c => c.code !== code); save(); return { ok: true };
+  },
+
+  // ---- admin: subject-combination catalogue CRUD ----
+  async listCombinations() { return db.combinations || []; },
+  async addCombination({ code, subjects }) {
+    const c = String(code || '').trim().toUpperCase();
+    if (!c) throw new Error('Code is required');
+    db.combinations = db.combinations || [];
+    if (db.combinations.some(x => x.code === c)) throw new Error('That code already exists');
+    const row = { code: c, subjects: Array.isArray(subjects) ? subjects : [] };
+    db.combinations.push(row); save(); return row;
+  },
+  async updateCombination(code, { subjects }) {
+    const c = (db.combinations || []).find(x => x.code === code);
+    if (!c) throw new Error('Combination not found');
+    if (subjects != null) c.subjects = Array.isArray(subjects) ? subjects : [];
+    save(); return c;
+  },
+  async deleteCombination(code) {
+    db.combinations = (db.combinations || []).filter(c => c.code !== code); save(); return { ok: true };
   },
 
   // ---- self-service profile update ----

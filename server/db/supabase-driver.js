@@ -3,7 +3,7 @@
 // Requires: npm install pg   (pg ships with @supabase; install directly to be safe).
 const path = require('path');
 const fs = require('fs');
-const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, STUDENTS } = require('../seed');
+const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, COMBINATIONS, STUDENTS } = require('../seed');
 
 let client;
 
@@ -61,6 +61,16 @@ async function seedIfEmpty() {
   }
 }
 
+// Runs on every boot, independent of seedIfEmpty's universities-empty guard —
+// an already-live database (universities non-empty) still needs these rows
+// backfilled the first time this table exists.
+async function seedCombinationsIfMissing() {
+  for (const c of COMBINATIONS) {
+    await q('INSERT INTO combinations (code,subjects) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING',
+      [c.code, JSON.stringify(c.subjects)]);
+  }
+}
+
 async function hydrateUniversity(u) {
   const { rows: camps } = await q('SELECT id,name FROM campuses WHERE university_id=$1', [u.id]);
   for (const c of camps) {
@@ -93,6 +103,7 @@ module.exports = {
     const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
     await q(schema); // Postgres accepts multiple statements in one query
     await seedIfEmpty();
+    await seedCombinationsIfMissing();
   },
 
   async createUser({ name, email, password, role, universityId, track }) {
@@ -234,6 +245,30 @@ module.exports = {
   },
   async deleteCriterion(code) {
     await q('DELETE FROM criteria WHERE code=$1', [code]);
+    return { ok: true };
+  },
+
+  // ---- admin: subject-combination catalogue CRUD ----
+  async listCombinations() {
+    const { rows } = await q('SELECT code,subjects FROM combinations ORDER BY code');
+    return rows.map(r => ({ code: r.code, subjects: (() => { try { return JSON.parse(r.subjects) || []; } catch { return []; } })() }));
+  },
+  async addCombination({ code, subjects }) {
+    const c = String(code || '').trim().toUpperCase();
+    if (!c) throw new Error('Code is required');
+    const { rows: existing } = await q('SELECT code FROM combinations WHERE code=$1', [c]);
+    if (existing.length) throw new Error('That code already exists');
+    await q('INSERT INTO combinations (code,subjects) VALUES ($1,$2)', [c, JSON.stringify(Array.isArray(subjects) ? subjects : [])]);
+    return { code: c, subjects: subjects || [] };
+  },
+  async updateCombination(code, { subjects }) {
+    const { rows } = await q('SELECT code FROM combinations WHERE code=$1', [code]);
+    if (!rows.length) throw new Error('Combination not found');
+    await q('UPDATE combinations SET subjects=$1 WHERE code=$2', [JSON.stringify(Array.isArray(subjects) ? subjects : []), code]);
+    return { code, subjects: subjects || [] };
+  },
+  async deleteCombination(code) {
+    await q('DELETE FROM combinations WHERE code=$1', [code]);
     return { ok: true };
   },
 

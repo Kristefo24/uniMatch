@@ -92,6 +92,22 @@ const CRITERIA = [
   { code:'C26', label:'Mode of study available', category:'Personal & Contextual', direction:'benefit' },
 ];
 
+// Admin-managed catalogue of valid A2 subject combinations. These 9 are the
+// same defaults the app shipped with as a hardcoded constant before this
+// became admin-editable — kept identical so existing behavior doesn't change
+// until an admin actually edits the catalogue.
+const COMBINATIONS = [
+  { code:'PCB', subjects:['Physics', 'Chemistry', 'Biology'] },
+  { code:'PCM', subjects:['Physics', 'Chemistry', 'Mathematics'] },
+  { code:'MCB', subjects:['Mathematics', 'Chemistry', 'Biology'] },
+  { code:'MPC', subjects:['Mathematics', 'Physics', 'Computer Science'] },
+  { code:'MPG', subjects:['Mathematics', 'Physics', 'Geography'] },
+  { code:'BCG', subjects:['Biology', 'Chemistry', 'Geography'] },
+  { code:'HGL', subjects:['History', 'Geography', 'Literature in English'] },
+  { code:'MEG', subjects:['Mathematics', 'Economics', 'Geography'] },
+  { code:'LKK', subjects:['Kinyarwanda', 'English', 'French'] },
+];
+
 // Seeded student accounts so the admin has people to suspend/restore.
 const STUDENTS = [
   { id:'stu-amara',  name:'Amara Mukamana', email:'amara@example.com',   home:'Kacyiru, Gasabo' },
@@ -110,6 +126,7 @@ function freshStore() {
     programmes: buildProgrammes(),
     staffRequests: STAFF_REQUESTS,
     criteria: CRITERIA,
+    combinations: COMBINATIONS.map(c => ({ code: c.code, subjects: [...c.subjects] })),
     applications: [],
     shortlists: [],
     ratings: [],
@@ -118,4 +135,4 @@ function freshStore() {
   };
 }
 
-module.exports = { DEFAULT_ADMIN, DEPARTMENTS, UNIVERSITIES, STAFF_REQUESTS, CRITERIA, STUDENTS, freshStore, buildProgrammes };
+module.exports = { DEFAULT_ADMIN, DEPARTMENTS, UNIVERSITIES, STAFF_REQUESTS, CRITERIA, COMBINATIONS, STUDENTS, freshStore, buildProgrammes };

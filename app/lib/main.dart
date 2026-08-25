@@ -124,23 +124,6 @@ const List<String> kDepartments = [
   'Architecture, Construction, Hospitality & Tourism',
 ];
 
-// A2 combination codes a student can pick at signup / edit profile, each
-// mapped to its fixed 3 subjects. Best-effort starter list — edit freely,
-// this is exactly the map staff-set principal passes are validated against.
-const Map<String, List<String>> kCombinationSubjects = {
-  'PCB': ['Physics', 'Chemistry', 'Biology'],
-  'PCM': ['Physics', 'Chemistry', 'Mathematics'],
-  'MCB': ['Mathematics', 'Chemistry', 'Biology'],
-  'MPC': ['Mathematics', 'Physics', 'Computer Science'],
-  'MPG': ['Mathematics', 'Physics', 'Geography'],
-  'BCG': ['Biology', 'Chemistry', 'Geography'],
-  'HGL': ['History', 'Geography', 'Literature in English'],
-  'MEG': ['Mathematics', 'Economics', 'Geography'],
-  'LKK': ['Kinyarwanda', 'English', 'French'],
-};
-const List<String> kCombinations = [
-  'PCB', 'PCM', 'MCB', 'MPC', 'MPG', 'BCG', 'HGL', 'MEG', 'LKK',
-];
 
 /// ---- Theme (matches the UniMatch design system) ----------------------------
 class C {
@@ -257,6 +240,15 @@ class Api {
     return list;
   }
 
+  /// Admin-managed subject-combination catalogue (e.g. PCB, MPC), cached for
+  /// the running session — pass refresh:true to force a re-fetch.
+  static Future<List<dynamic>> combinations({bool refresh = false}) async {
+    if (!refresh && Session.comboCatalogue != null) return Session.comboCatalogue!;
+    final list = await _get('/combinations') as List<dynamic>;
+    Session.comboCatalogue = list;
+    return list;
+  }
+
   static Future<List<dynamic>> rank(List<Map<String, dynamic>> criteria, {
     String? preferredReligion, String? dept, String? programme, double? homeLat, double? homeLng,
     double? budgetMin, double? budgetMax,
@@ -355,6 +347,15 @@ class Api {
   static Future<void> deleteCriterion(String code) => _delete('/admin/criteria/$code');
   static Future<List<dynamic>> criteriaUsage() async =>
       await _get('/admin/criteria-usage') as List<dynamic>;
+
+  // ---- admin: subject-combination catalogue ----
+  static Future<List<dynamic>> adminCombinations() async =>
+      await _get('/admin/combinations') as List<dynamic>;
+  static Future<void> addCombination(String code, List<String> subjects) =>
+      _post('/admin/combinations', {'code': code, 'subjects': subjects});
+  static Future<void> updateCombination(String code, List<String> subjects) =>
+      _put('/admin/combinations/$code', {'subjects': subjects});
+  static Future<void> deleteCombination(String code) => _delete('/admin/combinations/$code');
   static Future<Map<String, dynamic>> universityPopularity() async =>
       Map<String, dynamic>.from(await _get('/admin/university-popularity'));
 
@@ -381,6 +382,7 @@ class Session {
   static List<dynamic>? lastRanking;
   static List<Map<String, dynamic>> lastCriteria = [];
   static List<dynamic>? criteriaCatalogue;
+  static List<dynamic>? comboCatalogue;
   static String? selectedProgramme;
   static String homeArea = '';
   static double? homeLat;
@@ -477,6 +479,7 @@ Future<void> _logout(BuildContext context) async {
   Api.token = null;
   Session.name = ''; Session.email = ''; Session.role = 'student'; Session.uniId = null;
   Session.criteriaCatalogue = null;
+  Session.comboCatalogue = null;
   Session.selectedProgramme = null; Session.homeArea = ''; Session.lastRanking = null;
   Session.track = null;
   Session.homeLat = null; Session.homeLng = null; Session.selectedDept = null;
@@ -493,6 +496,11 @@ Future<void> _editProfile(BuildContext context) async {
   String? photo = Session.photo;
   bool saving = false;
   bool uploadingPhoto = false;
+  List<dynamic> combos = [];
+  if (Session.role == 'student') {
+    try { combos = await Api.combinations(); } catch (_) {}
+  }
+  if (!context.mounted) return;
   await showModalBottomSheet(
     context: context,
     isScrollControlled: true,
@@ -577,9 +585,9 @@ Future<void> _editProfile(BuildContext context) async {
             isExpanded: true,
             decoration: fieldDeco('A2 combination'),
             hint: const Text('Select your combination'),
-            items: kCombinations.map((c) => DropdownMenuItem(
-                value: c,
-                child: Text('$c (${kCombinationSubjects[c]?.join(' / ') ?? ''})'))).toList(),
+            items: combos.map((c) => DropdownMenuItem(
+                value: c['code'] as String,
+                child: Text('${c['code']} (${List<String>.from(c['subjects'] ?? const []).join(' / ')})'))).toList(),
             onChanged: (v) => setSheet(() => track = v),
           ),
         ],
@@ -646,6 +654,7 @@ Drawer adminDrawer(BuildContext context) => Drawer(
           _drawerItem(context, Icons.verified_user_outlined, 'Staff approvals', const AdminApprovalsScreen()),
           _drawerItem(context, Icons.apartment, 'Universities', const AdminUniversitiesScreen()),
           _drawerItem(context, Icons.tune, 'Evaluation criteria', const AdminCriteriaScreen()),
+          _drawerItem(context, Icons.rule_folder_outlined, 'Subject combinations', const AdminCombosScreen()),
           _drawerItem(context, Icons.people_outline, 'Student accounts', const AdminStudentsScreen()),
           _drawerItem(context, Icons.bar_chart, 'Reports', const AdminReportsScreen()),
           const Spacer(),
@@ -1147,18 +1156,29 @@ class _SignupScreenState extends State<SignupScreen> {
   String? track;                      // A2 combination code (student)
   String? uniId;                       // university you work for (staff)
   List<dynamic> universities = [];     // loaded for the staff dropdown
+  List<dynamic> combos = [];           // loaded for the student combination dropdown
   bool loading = false;
 
   @override
   void initState() {
     super.initState();
     _loadUniversities();
+    _loadCombinations();
   }
 
   Future<void> _loadUniversities() async {
     try {
       final list = await Api.universities();
       if (mounted) setState(() => universities = list);
+    } catch (_) {
+      // Dropdown just stays empty until the server is reachable.
+    }
+  }
+
+  Future<void> _loadCombinations() async {
+    try {
+      final list = await Api.combinations();
+      if (mounted) setState(() => combos = list);
     } catch (_) {
       // Dropdown just stays empty until the server is reachable.
     }
@@ -1260,9 +1280,9 @@ class _SignupScreenState extends State<SignupScreen> {
                   isExpanded: true,
                   decoration: fieldDeco('Select your combination'),
                   hint: const Text('Select your combination'),
-                  items: kCombinations.map((c) => DropdownMenuItem(
-                      value: c,
-                      child: Text('$c (${kCombinationSubjects[c]?.join(' / ') ?? ''})'))).toList(),
+                  items: combos.map((c) => DropdownMenuItem(
+                      value: c['code'] as String,
+                      child: Text('${c['code']} (${List<String>.from(c['subjects'] ?? const []).join(' / ')})'))).toList(),
                   onChanged: (v) => setState(() => track = v),
                 ),
                 const SizedBox(height: 16),
@@ -4120,7 +4140,12 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   Map<String, Map<String, List<String>>> combos = {};
   List<String> programmes = [];
   Set<String> expanded = {};
+  List<dynamic> _catalogue = []; // admin-managed combination codes + their base subjects
   bool loading = true;
+
+  List<String> get _catalogueCodes => _catalogue.map((c) => c['code'] as String).toList();
+  List<String> _catalogueSubjects(String code) =>
+      List<String>.from(_catalogue.firstWhere((c) => c['code'] == code, orElse: () => {'subjects': const []})['subjects'] ?? const []);
 
   @override
   void initState() {
@@ -4130,9 +4155,10 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
 
   Future<void> _load() async {
     try {
-      final results = await Future.wait([Api.programmes(null), Api.staffData(_staffUni)]);
+      final results = await Future.wait([Api.programmes(null), Api.staffData(_staffUni), Api.combinations()]);
       final progs = results[0] as List<dynamic>;
       final data = results[1] as Map<String, dynamic>;
+      _catalogue = results[2] as List<dynamic>;
       programmes = progs.where((p) => (p as Map)['universityId'] == _staffUni)
           .map((p) => '${(p as Map)['name']}').toSet().toList();
       final saved = (data['combos'] as Map?) ?? {};
@@ -4242,7 +4268,7 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                             const Text('WHICH COMBINATIONS CAN TAKE THIS PROGRAMME?',
                                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: C.muted, letterSpacing: 0.4)),
                             const SizedBox(height: 6),
-                            Wrap(spacing: 6, runSpacing: 6, children: kCombinations.map((code) {
+                            Wrap(spacing: 6, runSpacing: 6, children: _catalogueCodes.map((code) {
                               final allowed = combos[p]!.containsKey(code);
                               return GestureDetector(
                                 onTap: () => _toggleAllowed(p, code),
@@ -4264,8 +4290,8 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                                 // this combination (e.g. Physics alongside MCB) — a custom subject
                                 // stays in the pool as long as it's selected.
                                 final subs = [
-                                  ...(kCombinationSubjects[code] ?? const []),
-                                  ...chosen.where((s) => !(kCombinationSubjects[code] ?? const []).contains(s)),
+                                  ..._catalogueSubjects(code),
+                                  ...chosen.where((s) => !_catalogueSubjects(code).contains(s)),
                                 ];
                                 final pairs = subjectPairs(chosen);
                                 return Padding(
@@ -4723,7 +4749,10 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> {
       }
       await Api.saveStaffCriteria(_staffUni, d);
       if (!mounted) return;
-      toast(context, 'Criteria saved');
+      // No toast here — it was popping mid-transition as this screen
+      // unmounts, since the SnackBar and the immediate navigation below
+      // share the app's single ScaffoldMessenger. Landing back on the
+      // dashboard already confirms the save succeeded.
       Navigator.pushAndRemoveUntil(
           context, MaterialPageRoute(builder: (_) => const StaffDashboard()), (r) => false);
     } catch (e) {
@@ -5462,6 +5491,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
             _card(context, 'Evaluation criteria', 'Add, edit or remove ranking signals',
                 Icons.tune, const AdminCriteriaScreen(),
                 bg: const Color(0xFFDCEBE3), fg: C.green),
+            _card(context, 'Subject combinations', 'Add, edit or remove A2 combination codes',
+                Icons.rule_folder_outlined, const AdminCombosScreen(),
+                bg: const Color(0xFFF1EBE0), fg: C.greenDark),
             _card(context, 'Student accounts', 'Suspend or restore A2 graduates',
                 Icons.people_outline, const AdminStudentsScreen(), badge: studentCount,
                 bg: const Color(0xFFF6EBCF), fg: const Color(0xFFB48412)),
@@ -6117,6 +6149,186 @@ class _AdminCriteriaScreenState extends State<AdminCriteriaScreen> {
                             IconButton(icon: const Icon(Icons.delete_outline, color: Color(0xFFC25A1F), size: 20),
                                 onPressed: () async {
                                   try { await Api.deleteCriterion(m['code']); _reload(); }
+                                  catch (e) { if (mounted) toast(context, e.toString()); }
+                                }),
+                          ]),
+                        );
+                      }).toList(),
+                    ),
+            ),
+          ]);
+        },
+      ),
+    );
+  }
+}
+
+/// ---- Admin: subject-combination catalogue ----------------------------------
+class AdminCombosScreen extends StatefulWidget {
+  const AdminCombosScreen({super.key});
+  @override
+  State<AdminCombosScreen> createState() => _AdminCombosScreenState();
+}
+
+class _AdminCombosScreenState extends State<AdminCombosScreen> {
+  late Future<List<dynamic>> _future;
+  final TextEditingController _search = TextEditingController();
+  @override
+  void initState() {
+    super.initState();
+    _future = Api.adminCombinations();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  void _reload() => setState(() {
+    Session.comboCatalogue = null; // invalidate the shared public-catalogue cache
+    _future = Api.adminCombinations();
+  });
+
+  Future<String?> _promptText(String label) {
+    final c = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(label),
+        content: TextField(controller: c, autofocus: true, decoration: fieldDeco(label)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('Add')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _edit({Map? existing}) async {
+    final code = TextEditingController(text: existing?['code'] ?? '');
+    final subjects = List<String>.from(existing?['subjects'] ?? const []);
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: C.cream,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(existing == null ? 'Add combination' : 'Edit combination',
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: code,
+              enabled: existing == null, // code is fixed once created — delete + re-add to rename
+              textCapitalization: TextCapitalization.characters,
+              decoration: fieldDeco('Code (e.g. PCB)'),
+            ),
+            const SizedBox(height: 16),
+            const Text('SUBJECTS', style: TextStyle(
+                color: C.muted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+            const SizedBox(height: 8),
+            Wrap(spacing: 6, runSpacing: 6, children: [
+              ...subjects.map((s) => Chip(
+                    label: Text(s, style: const TextStyle(fontSize: 12)),
+                    backgroundColor: const Color(0xFFDCEBE3),
+                    onDeleted: () => setSheet(() => subjects.remove(s)),
+                  )),
+              ActionChip(
+                avatar: const Icon(Icons.add, size: 16, color: C.green),
+                label: const Text('Add subject', style: TextStyle(fontSize: 12, color: C.green)),
+                backgroundColor: Colors.white,
+                side: const BorderSide(color: C.border),
+                onPressed: () async {
+                  final v = await _promptText('Subject name');
+                  if (v != null && v.trim().isNotEmpty && !subjects.contains(v.trim())) {
+                    setSheet(() => subjects.add(v.trim()));
+                  }
+                },
+              ),
+            ]),
+            const SizedBox(height: 20),
+            primaryButton('Save combination', () => Navigator.pop(ctx, true)),
+          ]),
+        ),
+      ),
+    );
+    if (saved != true) return;
+    final c = code.text.trim().toUpperCase();
+    if (c.isEmpty) { if (mounted) toast(context, 'Code is required'); return; }
+    try {
+      if (existing == null) {
+        await Api.addCombination(c, subjects);
+      } else {
+        await Api.updateCombination(c, subjects);
+      }
+      _reload();
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      drawer: adminDrawer(context),
+      appBar: adminAppBar(context, 'Subject combinations', back: true),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _edit(),
+        backgroundColor: C.green,
+        icon: const Icon(Icons.add, color: Colors.white),
+        label: const Text('Add', style: TextStyle(color: Colors.white)),
+      ),
+      body: FutureBuilder<List<dynamic>>(
+        future: _future,
+        builder: (ctx, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator(color: C.green));
+          }
+          if (snap.hasError) return _errorView(snap.error.toString());
+          final all = snap.data ?? [];
+          if (all.isEmpty) return _emptyView('No combinations yet — add one.');
+          final query = _search.text.trim().toLowerCase();
+          final rows = query.isEmpty
+              ? all
+              : all.where((c) {
+                  final m = c as Map;
+                  return '${m['code']}'.toLowerCase().contains(query) ||
+                      List<String>.from(m['subjects'] ?? const []).any((s) => s.toLowerCase().contains(query));
+                }).toList();
+          return Column(children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              child: searchField(_search, 'Search combinations…'),
+            ),
+            Expanded(
+              child: rows.isEmpty
+                  ? _emptyView('No combinations match "${_search.text.trim()}".')
+                  : ListView(
+                      padding: const EdgeInsets.all(20),
+                      children: rows.map((c) {
+                        final m = c as Map;
+                        final subs = List<String>.from(m['subjects'] ?? const []);
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                              color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                          child: Row(children: [
+                            Expanded(
+                              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text(m['code'] ?? '', style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                                Text(subs.isEmpty ? 'No subjects set' : subs.join(' / '),
+                                    style: const TextStyle(color: C.muted, fontSize: 11)),
+                              ]),
+                            ),
+                            IconButton(icon: const Icon(Icons.edit_outlined, color: C.green, size: 20), onPressed: () => _edit(existing: m)),
+                            IconButton(icon: const Icon(Icons.delete_outline, color: Color(0xFFC25A1F), size: 20),
+                                onPressed: () async {
+                                  try { await Api.deleteCombination(m['code']); _reload(); }
                                   catch (e) { if (mounted) toast(context, e.toString()); }
                                 }),
                           ]),

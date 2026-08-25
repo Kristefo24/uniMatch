@@ -30,6 +30,13 @@ CREATE TABLE IF NOT EXISTS criteria (
   direction  VARCHAR(10) NOT NULL DEFAULT 'benefit'
 );
 
+-- Admin-managed catalogue of valid A2 subject combinations (e.g. PCB, MPC).
+-- subjects is a JSON-encoded array string, e.g. '["Mathematics","Physics","Computer Science"]'.
+CREATE TABLE IF NOT EXISTS combinations (
+  code      VARCHAR(8) PRIMARY KEY,
+  subjects  TEXT NOT NULL
+);
+
 -- One JSON blob of a university's staff-entered data (campuses, combos, criteria).
 CREATE TABLE IF NOT EXISTS staff_data (
   university_id  VARCHAR(64) PRIMARY KEY,

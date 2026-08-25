@@ -2,7 +2,7 @@
 // Requires: npm install mysql2   and a `unimatch` database created from schema.sql.
 const path = require('path');
 const fs = require('fs');
-const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, STUDENTS } = require('../seed');
+const { UNIVERSITIES, buildProgrammes, STAFF_REQUESTS, DEFAULT_ADMIN, CRITERIA, COMBINATIONS, STUDENTS } = require('../seed');
 
 let pool;
 
@@ -67,6 +67,16 @@ async function seedIfEmpty() {
   }
 }
 
+// Runs on every boot, independent of seedIfEmpty's universities-empty guard —
+// an already-live database (universities non-empty) still needs these rows
+// backfilled the first time this table exists.
+async function seedCombinationsIfMissing() {
+  const p = await getPool();
+  for (const c of COMBINATIONS) {
+    await p.query('INSERT IGNORE INTO combinations (code,subjects) VALUES (?,?)', [c.code, JSON.stringify(c.subjects)]);
+  }
+}
+
 async function hydrateUniversity(u) {
   const p = await getPool();
   const [camps] = await p.query('SELECT id,name FROM campuses WHERE university_id=?', [u.id]);
@@ -104,6 +114,7 @@ module.exports = {
       await p.query(stmt);
     }
     await seedIfEmpty();
+    await seedCombinationsIfMissing();
   },
 
   async createUser({ name, email, password, role, universityId, track }) {
@@ -267,6 +278,34 @@ module.exports = {
   async deleteCriterion(code) {
     const p = await getPool();
     await p.query('DELETE FROM criteria WHERE code=?', [code]);
+    return { ok: true };
+  },
+
+  // ---- admin: subject-combination catalogue CRUD ----
+  async listCombinations() {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT code,subjects FROM combinations ORDER BY code');
+    return rows.map(r => ({ code: r.code, subjects: (() => { try { return JSON.parse(r.subjects) || []; } catch { return []; } })() }));
+  },
+  async addCombination({ code, subjects }) {
+    const p = await getPool();
+    const c = String(code || '').trim().toUpperCase();
+    if (!c) throw new Error('Code is required');
+    const [existing] = await p.query('SELECT code FROM combinations WHERE code=?', [c]);
+    if (existing.length) throw new Error('That code already exists');
+    await p.query('INSERT INTO combinations (code,subjects) VALUES (?,?)', [c, JSON.stringify(Array.isArray(subjects) ? subjects : [])]);
+    return { code: c, subjects: subjects || [] };
+  },
+  async updateCombination(code, { subjects }) {
+    const p = await getPool();
+    const [existing] = await p.query('SELECT code FROM combinations WHERE code=?', [code]);
+    if (!existing.length) throw new Error('Combination not found');
+    await p.query('UPDATE combinations SET subjects=? WHERE code=?', [JSON.stringify(Array.isArray(subjects) ? subjects : []), code]);
+    return { code, subjects: subjects || [] };
+  },
+  async deleteCombination(code) {
+    const p = await getPool();
+    await p.query('DELETE FROM combinations WHERE code=?', [code]);
     return { ok: true };
   },
 

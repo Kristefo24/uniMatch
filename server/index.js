@@ -106,6 +106,13 @@ app.get('/criteria', wrap(async (_req, res) => {
   })));
 }));
 
+// The admin-managed subject-combination catalogue (e.g. PCB, MPC) — every A2
+// graduate's track picker and every staff programme-eligibility screen reads
+// from this instead of a hardcoded list.
+app.get('/combinations', wrap(async (_req, res) => {
+  res.json(await db.listCombinations());
+}));
+
 // ---- ranking (TOPSIS) -----------------------------------------------------
 app.post('/rank', auth(false), wrap(async (req, res) => {
   const { universityIds, criteria, preferredReligion, dept, programme, homeLat, homeLng, budgetMin, budgetMax } = req.body || {};
@@ -356,6 +363,20 @@ app.put('/admin/criteria/:code', auth(), requireRole('admin'), wrap(async (req, 
 }));
 app.delete('/admin/criteria/:code', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.deleteCriterion(req.params.code));
+}));
+
+// admin: subject-combination catalogue CRUD
+app.get('/admin/combinations', auth(), requireRole('admin'), wrap(async (_req, res) => {
+  res.json(await db.listCombinations());
+}));
+app.post('/admin/combinations', auth(), requireRole('admin'), wrap(async (req, res) => {
+  res.json(await db.addCombination(req.body || {}));
+}));
+app.put('/admin/combinations/:code', auth(), requireRole('admin'), wrap(async (req, res) => {
+  res.json(await db.updateCombination(req.params.code, req.body || {}));
+}));
+app.delete('/admin/combinations/:code', auth(), requireRole('admin'), wrap(async (req, res) => {
+  res.json(await db.deleteCombination(req.params.code));
 }));
 app.get('/admin/criteria-usage', auth(), requireRole('admin'), wrap(async (_req, res) => {
   res.json(await db.criteriaUsageCounts());
