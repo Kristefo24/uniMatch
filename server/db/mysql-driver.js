@@ -91,6 +91,49 @@ async function migratePlainTextPasswords() {
   }
 }
 
+// A department with no explicitly-named programme yet shows a synthetic
+// placeholder named after the department itself (see listProgrammes) --
+// if staff configure eligible combinations while that's showing, they're
+// saved under the department's name. When a real named programme later
+// replaces the placeholder, carry that data forward to the real name so
+// it doesn't go silently unreachable. Copy-only: never deletes the
+// original key, so this is safe to call on every save.
+function carryForwardOrphanedCombos(oldProgrammes, newProgrammes, oldCombos) {
+  const combos = { ...(oldCombos || {}) };
+  const oldDeptsWithReal = new Set((oldProgrammes || []).map(p => p.dept));
+  const newDeptCounts = {};
+  for (const p of newProgrammes) newDeptCounts[p.dept] = (newDeptCounts[p.dept] || 0) + 1;
+  for (const p of newProgrammes) {
+    if (oldDeptsWithReal.has(p.dept) || newDeptCounts[p.dept] !== 1) continue;
+    if (combos[p.dept] && !combos[p.name]) combos[p.name] = combos[p.dept];
+  }
+  return combos;
+}
+
+// One-time (per boot) recovery of combos already orphaned under a stale
+// department-name key before the carry-forward above existed. Copy-only,
+// idempotent -- a repaired key stops matching once the real name has data.
+async function migrateOrphanedComboKeys() {
+  const p = await getPool();
+  const [rows] = await p.query('SELECT university_id, data FROM staff_data');
+  for (const row of rows) {
+    let d;
+    try { d = JSON.parse(row.data); } catch { continue; }
+    if (!d.combos) continue;
+    const progs = d.programmes || [];
+    const deptCounts = {};
+    for (const pr of progs) deptCounts[pr.dept] = (deptCounts[pr.dept] || 0) + 1;
+    const byName = new Set(progs.map(pr => pr.name));
+    let changed = false;
+    for (const dept of Object.keys(d.combos)) {
+      if (byName.has(dept) || deptCounts[dept] !== 1) continue;
+      const target = progs.find(pr => pr.dept === dept).name;
+      if (!d.combos[target]) { d.combos[target] = d.combos[dept]; changed = true; }
+    }
+    if (changed) await p.query('UPDATE staff_data SET data=? WHERE university_id=?', [JSON.stringify(d), row.university_id]);
+  }
+}
+
 async function hydrateUniversity(u) {
   const p = await getPool();
   const [camps] = await p.query('SELECT id,name FROM campuses WHERE university_id=?', [u.id]);
@@ -130,6 +173,7 @@ module.exports = {
     await seedIfEmpty();
     await seedCombinationsIfMissing();
     await migratePlainTextPasswords();
+    await migrateOrphanedComboKeys();
   },
 
   async createUser({ name, email, password, role, universityId, track }) {
@@ -435,7 +479,9 @@ module.exports = {
   },
   async saveStaffProgrammes(uniId, programmes) {
     const p = await getPool();
-    const d = await this._staffData(uniId); d.programmes = programmes;
+    const d = await this._staffData(uniId);
+    d.combos = carryForwardOrphanedCombos(d.programmes, programmes, d.combos);
+    d.programmes = programmes;
     await this._saveStaffData(uniId, d);
     await p.query('DELETE FROM programmes WHERE university_id=?', [uniId]);
     for (const pr of programmes) {

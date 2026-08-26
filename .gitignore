@@ -5,4 +5,5 @@ app/node_modules/
 server/node_modules/
 app/build/
 app/.dart_tool/
+app/.netlify/
 .thumbnail/

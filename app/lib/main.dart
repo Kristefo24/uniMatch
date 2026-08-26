@@ -86,6 +86,55 @@ List<String> subjectPairs(List<String> subs) {
   return out;
 }
 
+// A small curated palette, cycled by combination code -- consistent
+// everywhere a code is shown, echoing the existing per-university color
+// convention (C.uni(abbr)). Purely visual: doesn't imply any semantics.
+const _comboPalette = [
+  Color(0xFF2A5C8F), Color(0xFFB4472A), Color(0xFF1F5F4A), Color(0xFF7A2F4A),
+  Color(0xFFB48412), Color(0xFF164638), Color(0xFF8F4B2A), Color(0xFF2F4A7A),
+];
+Color comboColor(String code) => _comboPalette[code.hashCode.abs() % _comboPalette.length];
+
+/// Shared "eligible principal passes" card -- one colored chip per
+/// combination code with its qualifying subject pairs, used identically on
+/// DetailScreen and ProgrammeScreen. Renders nothing for an empty map --
+/// never fabricates eligibility that staff didn't actually set.
+Widget eligibilityCard(Map<String, List<String>> byCode, {String? title}) {
+  if (byCode.isEmpty) return const SizedBox.shrink();
+  return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+    if (title != null) ...[
+      Text(title, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink, fontSize: 12.5)),
+      const SizedBox(height: 8),
+    ],
+    Wrap(spacing: 8, runSpacing: 8, children: byCode.entries.map((e) {
+      final color = comboColor(e.key);
+      final pairs = subjectPairs(e.value);
+      if (pairs.isEmpty) return const SizedBox.shrink();
+      return Container(
+        constraints: const BoxConstraints(maxWidth: 220),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(999)),
+            child: Text(e.key, style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(height: 6),
+          ...pairs.map((pair) => Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(pair, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600)),
+              )),
+        ]),
+      );
+    }).toList()),
+  ]);
+}
+
 
 /// Shared OpenStreetMap Nominatim helpers — used by both the A2 graduate's
 /// home-location map (`LocationScreen`) and staff's university/transport
@@ -2673,34 +2722,10 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                                   if (Session.track == null) const SizedBox(height: 6),
                                   ...eligibility.entries.map((e) {
                                     final uniName = uniNames[e.key] ?? '';
-                                    final subjects = <String>{};
-                                    for (final entry in e.value) subjects.addAll(entry.value);
-                                    final list = subjects.toList();
-                                    final phrase = list.length <= 2
-                                        ? 'Eligible if you passed: ${list.join(' and ')}'
-                                        : 'Eligible if you passed any 2 of: ${list.join(', ')}';
                                     return Padding(
                                       padding: const EdgeInsets.only(bottom: 8),
-                                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                        if (eligibility.length > 1) ...[
-                                          Text(uniName, style: const TextStyle(color: C.ink, fontSize: 11.5, fontWeight: FontWeight.w600)),
-                                          const SizedBox(height: 4),
-                                        ],
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFFDF3D9),
-                                            borderRadius: BorderRadius.circular(10),
-                                            border: Border.all(color: C.gold),
-                                          ),
-                                          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                            const Icon(Icons.info_outline, size: 15, color: C.greenDark),
-                                            const SizedBox(width: 8),
-                                            Expanded(child: Text(phrase,
-                                                style: const TextStyle(fontSize: 11.5, color: C.greenDark, fontWeight: FontWeight.w600, height: 1.35))),
-                                          ]),
-                                        ),
-                                      ]),
+                                      child: eligibilityCard(Map.fromEntries(e.value),
+                                          title: eligibility.length > 1 ? uniName : null),
                                     );
                                   }),
                                 ],
@@ -3591,33 +3616,20 @@ class _DetailScreenState extends State<DetailScreen> {
     if (raw is! Map) return null; // unset, or old pre-combination shape
     final byCode = <String, List<String>>{};
     raw.forEach((k, v) {
-      final pairs = subjectPairs(List<String>.from(v as List));
-      if (pairs.isNotEmpty) byCode['$k'] = pairs;
+      final subs = List<String>.from(v as List);
+      if (subjectPairs(subs).isNotEmpty) byCode['$k'] = subs;
     });
     if (byCode.isEmpty) return null;
     final track = Session.track;
-    final entries = (track != null && byCode.containsKey(track))
-        ? [MapEntry(track, byCode[track]!)]
-        : byCode.entries.toList();
+    final entries = (track != null && byCode.containsKey(track)) ? {track: byCode[track]!} : byCode;
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(track != null && byCode.containsKey(track)
-                ? 'Your principal passes for $prog ($track)'
-                : 'Principal passes required for $prog',
-            style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink, fontSize: 12.5)),
-        const SizedBox(height: 8),
-        Wrap(spacing: 6, runSpacing: 6, children: entries
-            .expand((e) => e.value.map((pair) => '${e.key}: $pair'))
-            .map((line) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
-              child: Text(line,
-                  style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
-            )).toList()),
-      ]),
+      child: eligibilityCard(entries,
+          title: track != null && byCode.containsKey(track)
+              ? 'Your principal passes for $prog ($track)'
+              : 'Principal passes required for $prog'),
     );
   }
 
@@ -4516,10 +4528,16 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
           .map((p) => '${(p as Map)['name']}').toSet().toList();
       final saved = (data['combos'] as Map?) ?? {};
       combos = {
+        // Keep everything already saved -- even under a programme name
+        // that's been renamed/removed since -- so that _save()'s full
+        // round-trip write can never erase staff-entered data for a
+        // programme this session simply doesn't have loaded.
+        for (final entry in saved.entries)
+          if (entry.value is Map)
+            '${entry.key}': (entry.value as Map).map((k, v) => MapEntry('$k', List<String>.from(v as List))),
+        // Then make sure every CURRENT programme has an editable entry.
         for (final p in programmes)
-          p: (saved[p] is Map)
-              ? (saved[p] as Map).map((k, v) => MapEntry('$k', List<String>.from(v as List)))
-              : <String, List<String>>{}, // old flat-list shape (or unset) -> starts empty, safe
+          if (saved[p] is! Map) p: <String, List<String>>{},
       };
     } catch (_) {}
     if (mounted) setState(() => loading = false);

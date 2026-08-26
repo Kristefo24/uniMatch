@@ -22,6 +22,48 @@ function migratePlainTextPasswords() {
   if (changed) save();
 }
 
+// A department with no explicitly-named programme yet shows a synthetic
+// placeholder named after the department itself (see listProgrammes) --
+// if staff configure eligible combinations while that's showing, they're
+// saved under the department's name. When a real named programme later
+// replaces the placeholder, carry that data forward to the real name so
+// it doesn't go silently unreachable. Copy-only: never deletes the
+// original key, so this is safe to call on every save.
+function carryForwardOrphanedCombos(oldProgrammes, newProgrammes, oldCombos) {
+  const combos = { ...(oldCombos || {}) };
+  const oldDeptsWithReal = new Set((oldProgrammes || []).map(p => p.dept));
+  const newDeptCounts = {};
+  for (const p of newProgrammes) newDeptCounts[p.dept] = (newDeptCounts[p.dept] || 0) + 1;
+  for (const p of newProgrammes) {
+    // Skip if this dept already had a real programme (no placeholder existed),
+    // or multiple new programmes now share the dept (ambiguous who inherits).
+    if (oldDeptsWithReal.has(p.dept) || newDeptCounts[p.dept] !== 1) continue;
+    if (combos[p.dept] && !combos[p.name]) combos[p.name] = combos[p.dept];
+  }
+  return combos;
+}
+
+// One-time (per boot) recovery of combos already orphaned under a stale
+// department-name key before the carry-forward above existed. Copy-only,
+// idempotent -- a repaired key stops matching once the real name has data.
+function migrateOrphanedComboKeys() {
+  let changed = false;
+  for (const uniId of Object.keys(db.staffData || {})) {
+    const d = db.staffData[uniId];
+    if (!d || !d.combos) continue;
+    const progs = d.programmes || [];
+    const deptCounts = {};
+    for (const p of progs) deptCounts[p.dept] = (deptCounts[p.dept] || 0) + 1;
+    const byName = new Set(progs.map(p => p.name));
+    for (const dept of Object.keys(d.combos)) {
+      if (byName.has(dept) || deptCounts[dept] !== 1) continue;
+      const target = progs.find(p => p.dept === dept).name;
+      if (!d.combos[target]) { d.combos[target] = d.combos[dept]; changed = true; }
+    }
+  }
+  if (changed) save();
+}
+
 function load() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(FILE)) {
@@ -40,6 +82,7 @@ function load() {
     save();
   }
   migratePlainTextPasswords();
+  migrateOrphanedComboKeys();
 }
 function save() {
   fs.writeFileSync(FILE, JSON.stringify(db, null, 2));
@@ -170,7 +213,9 @@ module.exports = {
   },
   async saveStaffProgrammes(uniId, programmes) {
     db.staffData = db.staffData || {};
-    db.staffData[uniId] = { ...(db.staffData[uniId] || { campuses:[], combos:{}, criteria:{} }), programmes };
+    const existing = db.staffData[uniId] || { campuses:[], combos:{}, criteria:{} };
+    const combos = carryForwardOrphanedCombos(existing.programmes, programmes, existing.combos);
+    db.staffData[uniId] = { ...existing, combos, programmes };
     db.programmes = db.programmes.filter(p => p.universityId !== uniId);
     for (const p of programmes) {
       db.programmes.push({ id: uid('prog'), name: p.name, dept: p.dept, campus: p.campus || '', years: p.years || null, universityId: uniId });
