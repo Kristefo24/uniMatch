@@ -262,7 +262,7 @@ module.exports = {
   },
   async listShortlist(userId) {
     const ids = db.shortlists.filter(s => s.userId === userId).map(s => s.universityId);
-    return db.universities.filter(u => ids.includes(u.id)).map(u => ({ id: u.id, abbr: u.abbr, name: u.name }));
+    return db.universities.filter(u => ids.includes(u.id)).map(u => ({ id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null }));
   },
   async removeShortlist(userId, universityId) {
     db.shortlists = db.shortlists.filter(s => !(s.userId === userId && s.universityId === universityId));

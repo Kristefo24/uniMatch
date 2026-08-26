@@ -12,6 +12,7 @@ import 'package:flutter_map/flutter_map.dart'
         CameraConstraint, InteractionOptions, InteractiveFlag, LatLngBounds;
 import 'package:latlong2/latlong.dart' show LatLng;
 import 'package:image_picker/image_picker.dart';
+import 'package:geolocator/geolocator.dart';
 
 /// Official application pages per seeded university id.
 const Map<String, String> kApplyUrls = {
@@ -1873,6 +1874,11 @@ class _CompareScreenState extends State<CompareScreen> {
     final rv = (rd != null ? rd['vals'] : null) as Map? ?? {};
     final ls = left != null ? (_staffCache[left!['id']] ?? const {}) : const {};
     final rs = right != null ? (_staffCache[right!['id']] ?? const {}) : const {};
+    // Live-computed once per build — both sides share the same
+    // Session.homeLat/homeLng null-check, so C07 is blank together or
+    // numeric together, never mismatched.
+    final kmHomeL = ld != null ? resolveHomeDistanceKm(ld, _allProgrammes) : null;
+    final kmHomeR = rd != null ? resolveHomeDistanceKm(rd, _allProgrammes) : null;
 
     final categories = <String>[];
     final byCategory = <String, List<Map<String, dynamic>>>{};
@@ -1894,7 +1900,30 @@ class _CompareScreenState extends State<CompareScreen> {
                   const SizedBox(width: 10),
                   Expanded(child: _slot(right, false)),
                 ]),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
+                Builder(builder: (_) {
+                  Widget? mapFor(Map<String, dynamic>? uni) {
+                    if (uni == null) return null;
+                    final campusName = resolveDisplayCampusName(uni, _allProgrammes);
+                    final campusPins = uni['campusPins'] as Map?;
+                    final pins = campusName != null ? (campusPins?[campusName] as Map?) : null;
+                    if (pins == null) return null;
+                    final map = campusLocationMap(Map<String, dynamic>.from(pins), height: 110);
+                    return map is SizedBox ? null : map;
+                  }
+                  final lMap = mapFor(ld);
+                  final rMap = mapFor(rd);
+                  if (lMap == null && rMap == null) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Expanded(child: lMap ?? const SizedBox.shrink()),
+                      const SizedBox(width: 10),
+                      Expanded(child: rMap ?? const SizedBox.shrink()),
+                    ]),
+                  );
+                }),
+                const SizedBox(height: 4),
                 if (_allCriteria.isEmpty)
                   const Padding(padding: EdgeInsets.all(24),
                       child: Text('Loading criteria…', textAlign: TextAlign.center, style: TextStyle(color: C.muted)))
@@ -1910,17 +1939,11 @@ class _CompareScreenState extends State<CompareScreen> {
                       ),
                       ...items.map((c) {
                         final code = c['code'] as String;
-                        // C07 is always live-computed against the home
-                        // pin, never a stale/replayed value — both
-                        // sides share the same Session.homeLat/homeLng
-                        // null-check, so they're blank together or
-                        // numeric together, never mismatched.
-                        final l = code == 'C07'
-                            ? (ld != null ? resolveHomeDistanceKm(ld, _allProgrammes) : null)
-                            : (lv[code] ?? ls[code]);
-                        final r = code == 'C07'
-                            ? (rd != null ? resolveHomeDistanceKm(rd, _allProgrammes) : null)
-                            : (rv[code] ?? rs[code]);
+                        // Same per-code formatting DetailScreen already
+                        // trusts (C07 in km, C25 as a religion name, C26
+                        // as mode names, etc.) instead of raw numbers.
+                        final l = _valueForCode(code, lv, ls, kmHomeL);
+                        final r = _valueForCode(code, rv, rs, kmHomeR);
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           padding: const EdgeInsets.all(12),
@@ -1950,6 +1973,10 @@ class _CompareScreenState extends State<CompareScreen> {
         decoration: BoxDecoration(
             color: u == null ? C.sand : C.uni('${u['abbr']}'), borderRadius: BorderRadius.circular(16)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (u != null) ...[
+            universityLogo(u, size: 36, circle: true, bg: Colors.white.withValues(alpha: 0.9), textColor: C.uni('${u['abbr']}')),
+            const SizedBox(height: 8),
+          ],
           Text('${u?['abbr'] ?? '—'}', style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
           Text('${u?['name'] ?? 'Pick a university'}',
@@ -1997,29 +2024,30 @@ double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
 }
 
-/// Distance from the student's home pin to whichever campus is actually
-/// relevant to them — mirrors server/index.js's resolveCampusForUni exactly:
-/// exact programme's own campus > single/nearest dept-offering campus >
-/// nearest campus overall (when the uni doesn't offer their dept, or no
-/// dept is chosen at all — e.g. checking a uni their ranking didn't
-/// recommend). No home pin -> null, never a stale/fabricated number.
-double? resolveHomeDistanceKm(Map<String, dynamic> uni, List<dynamic> allProgrammes) {
-  if (Session.homeLat == null || Session.homeLng == null) return null;
-  final campuses = List<Map>.from(uni['campuses'] ?? const []);
+LatLng? _campusPinPoint(Map<String, dynamic> uni, String name) {
   final campusPins = Map<String, dynamic>.from(uni['campusPins'] ?? const {});
+  final p = campusPins[name];
+  final school = p is Map ? p['schoolLocation'] : null;
+  if (school is! Map) return null;
+  return LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble());
+}
 
-  LatLng? pinOf(String name) {
-    final p = campusPins[name];
-    final school = p is Map ? p['schoolLocation'] : null;
-    if (school is! Map) return null;
-    return LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble());
-  }
+/// Which campus is actually relevant to a student's dept/programme choice —
+/// mirrors server/index.js's resolveCampusForUni exactly: exact programme's
+/// own campus > single/nearest dept-offering campus > nearest campus
+/// overall (when the uni doesn't offer their dept, or no dept is chosen at
+/// all — e.g. checking a uni their ranking didn't recommend). Shared by the
+/// live home-distance calculation and the campus-location map widget so
+/// both always agree on which campus they're describing.
+String? resolveDisplayCampusName(Map<String, dynamic> uni, List<dynamic> allProgrammes) {
+  final campuses = List<Map>.from(uni['campuses'] ?? const []);
 
   String? nearest(List<Map> among) {
+    if (Session.homeLat == null || Session.homeLng == null) return null;
     String? best;
     double bestKm = double.infinity;
     for (final c in among) {
-      final pt = pinOf(c['name'] as String);
+      final pt = _campusPinPoint(uni, c['name'] as String);
       if (pt == null) continue;
       final km = haversineKm(Session.homeLat!, Session.homeLng!, pt.latitude, pt.longitude);
       if (km < bestKm) { bestKm = km; best = c['name'] as String; }
@@ -2045,9 +2073,17 @@ double? resolveHomeDistanceKm(Map<String, dynamic> uni, List<dynamic> allProgram
     }
   }
   // Tier 3: not offering the selected dept (or no dept chosen at all) -> nearest campus overall.
-  campusName ??= nearest(campuses);
+  campusName ??= nearest(campuses) ?? (campuses.isNotEmpty ? campuses[0]['name'] as String : null);
+  return campusName;
+}
 
-  final pt = campusName != null ? pinOf(campusName) : null;
+/// Distance from the student's home pin to whichever campus is actually
+/// relevant to them (see resolveDisplayCampusName). No home pin -> null,
+/// never a stale/fabricated number.
+double? resolveHomeDistanceKm(Map<String, dynamic> uni, List<dynamic> allProgrammes) {
+  if (Session.homeLat == null || Session.homeLng == null) return null;
+  final campusName = resolveDisplayCampusName(uni, allProgrammes);
+  final pt = campusName != null ? _campusPinPoint(uni, campusName) : null;
   if (pt != null) return haversineKm(Session.homeLat!, Session.homeLng!, pt.latitude, pt.longitude);
   // Legacy single-pin universities with no per-campus data at all.
   final legacy = uni['schoolLocation'];
@@ -2057,13 +2093,91 @@ double? resolveHomeDistanceKm(Map<String, dynamic> uni, List<dynamic> allProgram
   return null;
 }
 
+List<Marker> _markersForPins(Map<String, dynamic> pins) {
+  final markers = <Marker>[];
+  final school = pins['schoolLocation'] as Map?;
+  if (school != null) {
+    markers.add(Marker(
+      point: LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble()),
+      width: 34, height: 34,
+      child: const Icon(Icons.school, color: C.greenDark, size: 34),
+    ));
+  }
+  for (final s in (pins['busStops'] as List? ?? const []).cast<Map>()) {
+    markers.add(Marker(
+      point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
+      width: 28, height: 28,
+      child: const Icon(Icons.directions_bus, color: Color(0xFF2A5C8F), size: 28),
+    ));
+  }
+  for (final s in (pins['motoStops'] as List? ?? const []).cast<Map>()) {
+    markers.add(Marker(
+      point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
+      width: 28, height: 28,
+      child: const Icon(Icons.two_wheeler, color: Color(0xFFC25A1F), size: 28),
+    ));
+  }
+  return markers;
+}
+
+Widget _kmChip(IconData icon, String label, Color color) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(999)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 12, color: color),
+        const SizedBox(width: 4),
+        Text(label, style: TextStyle(fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
+      ]),
+    );
+
+/// Read-only map showing a campus's school/bus/moto pins, with the
+/// pre-computed distances between them — used on DetailScreen and
+/// CompareScreen. Renders nothing if the resolved campus has no school pin
+/// yet, matching the "never fabricate" rule used everywhere else.
+Widget campusLocationMap(Map<String, dynamic>? pins, {double height = 150}) {
+  if (pins == null || pins['schoolLocation'] == null) return const SizedBox.shrink();
+  final school = pins['schoolLocation'] as Map;
+  final busKm = pins['schoolToBusKm'] as num?;
+  final motoKm = pins['schoolToMotoKm'] as num?;
+  return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: SizedBox(
+        height: height,
+        child: FlutterMap(
+          options: MapOptions(
+            initialCenter: LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble()),
+            initialZoom: 14,
+            interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'com.unimatch.gasabo',
+            ),
+            MarkerLayer(markers: _markersForPins(pins)),
+          ],
+        ),
+      ),
+    ),
+    if (busKm != null || motoKm != null)
+      Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Wrap(spacing: 6, runSpacing: 6, children: [
+          if (busKm != null) _kmChip(Icons.directions_bus, 'Bus · ${busKm.toStringAsFixed(2)} km', const Color(0xFF2A5C8F)),
+          if (motoKm != null) _kmChip(Icons.two_wheeler, 'Moto · ${motoKm.toStringAsFixed(2)} km', const Color(0xFFC25A1F)),
+        ]),
+      ),
+  ]);
+}
+
 /// Resolves what to show a student for one criterion code on DetailScreen —
 /// null means "staff never set this," which the caller hides entirely
 /// rather than rendering a placeholder.
 dynamic _valueForCode(String code, Map vals, Map staffAnswers, num? kmHome) {
   switch (code) {
     case 'C07':
-      return kmHome;
+      return kmHome != null ? '${kmHome.toStringAsFixed(2)} km' : null;
     case 'C12':
       return vals['C12'] != null ? '${(vals['C12'] as num).toStringAsFixed(1)}%' : null;
     case 'C14':
@@ -2924,6 +3038,37 @@ class _LocationScreenState extends State<LocationScreen> {
     }
   }
 
+  Future<void> _useCurrentLocation() async {
+    setState(() => locating = true);
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        if (mounted) toast(context, 'Turn on location services to use this.');
+        return;
+      }
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+        if (mounted) toast(context, 'Location access was denied — allow it in your browser to use this.');
+        return;
+      }
+      final pos = await Geolocator.getCurrentPosition();
+      final p = LatLng(pos.latitude, pos.longitude);
+      final label = await reverseGeocodeAddress(p);
+      if (!mounted) return;
+      setState(() {
+        pin = p;
+        picked = label ?? coordsLabel(p);
+        addr.text = picked ?? '';
+        searchResults = [];
+      });
+      _mapController.move(p, 15);
+    } catch (e) {
+      if (mounted) toast(context, 'Could not get your location: $e');
+    } finally {
+      if (mounted) setState(() => locating = false);
+    }
+  }
+
   void _selectResult(Map<String, dynamic> r) {
     final lat = double.tryParse('${r['lat']}');
     final lon = double.tryParse('${r['lon']}');
@@ -3030,6 +3175,22 @@ class _LocationScreenState extends State<LocationScreen> {
                       const Positioned(top: 12, right: 12,
                           child: SizedBox(width: 20, height: 20,
                               child: CircularProgressIndicator(strokeWidth: 2, color: C.green))),
+                    Positioned(
+                      top: 12, left: 12,
+                      child: Material(
+                        color: Colors.white,
+                        shape: const CircleBorder(),
+                        elevation: 2,
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: locating ? null : _useCurrentLocation,
+                          child: const Padding(
+                            padding: EdgeInsets.all(9),
+                            child: Icon(Icons.my_location, color: Color(0xFFC25A1F), size: 20),
+                          ),
+                        ),
+                      ),
+                    ),
                     if (picked != null)
                       Positioned(
                         left: 12, right: 12, bottom: 12,
@@ -3472,7 +3633,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     _heroDiv(),
                     _heroStat(programmeCount != null ? '$programmeCount' : '—', 'PROGRAMMES'),
                     _heroDiv(),
-                    _heroStat(kmHome != null ? kmHome.toStringAsFixed(1) : '—', 'KM HOME'),
+                    _heroStat(kmHome != null ? kmHome.toStringAsFixed(2) : '—', 'KM HOME'),
                   ]),
                 ]),
               ),
@@ -3509,6 +3670,22 @@ class _DetailScreenState extends State<DetailScreen> {
                       ]),
                     )),
               const SizedBox(height: 12),
+              Builder(builder: (_) {
+                final campusName = resolveDisplayCampusName(u, allProgrammes);
+                final campusPins = u['campusPins'] as Map?;
+                final pins = campusName != null ? (campusPins?[campusName] as Map?) : null;
+                final map = campusLocationMap(pins != null ? Map<String, dynamic>.from(pins) : null);
+                if (map is SizedBox) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Campus location${campusName != null ? ' · $campusName' : ''}',
+                        style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                    const SizedBox(height: 8),
+                    map,
+                  ]),
+                );
+              }),
               if (_eligibilityBox() != null) _eligibilityBox()!,
               const SizedBox(height: 8),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [

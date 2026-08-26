@@ -466,7 +466,7 @@ module.exports = {
   },
   async listShortlist(userId) {
     const { rows } = await q(
-      'SELECT u.id,u.abbr,u.name FROM shortlists s JOIN universities u ON u.id=s.university_id WHERE s.user_id=$1',
+      'SELECT u.id,u.abbr,u.name,u.photo FROM shortlists s JOIN universities u ON u.id=s.university_id WHERE s.user_id=$1',
       [userId]);
     return rows;
   },

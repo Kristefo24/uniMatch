@@ -520,7 +520,7 @@ module.exports = {
   async listShortlist(userId) {
     const p = await getPool();
     const [rows] = await p.query(
-      'SELECT u.id,u.abbr,u.name FROM shortlists s JOIN universities u ON u.id=s.university_id WHERE s.user_id=?',
+      'SELECT u.id,u.abbr,u.name,u.photo FROM shortlists s JOIN universities u ON u.id=s.university_id WHERE s.user_id=?',
       [userId]);
     return rows;
   },
