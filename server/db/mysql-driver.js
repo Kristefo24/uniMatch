@@ -387,6 +387,46 @@ module.exports = {
     }
     return d;
   },
+  // Saves campuses and programmes together in one transaction so they can
+  // never desync from a partial failure the way two independent HTTP
+  // requests could (e.g. a deleted campus's programmes surviving because
+  // only the campuses save reached the server before a network hiccup) —
+  // either both replace-writes land, or neither does.
+  async saveStaffCampusesAndProgrammes(uniId, campuses, programmes) {
+    const pool = await getPool();
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query('SELECT data FROM staff_data WHERE university_id=?', [uniId]);
+      let d = { campuses: [], combos: {}, criteria: {} };
+      if (rows.length) { try { d = JSON.parse(rows[0].data); } catch { /* fallthrough */ } }
+      d.campuses = campuses;
+      d.programmes = programmes;
+      await conn.query(
+        'INSERT INTO staff_data (university_id,data) VALUES (?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)',
+        [uniId, JSON.stringify(d)]);
+      await conn.query('DELETE FROM campuses WHERE university_id=?', [uniId]);
+      for (const c of campuses) {
+        const cid = uid('camp');
+        await conn.query('INSERT INTO campuses (id,university_id,name) VALUES (?,?,?)', [cid, uniId, c.name]);
+        for (const dep of (c.depts || [])) {
+          await conn.query('INSERT INTO campus_departments (campus_id,department) VALUES (?,?)', [cid, dep]);
+        }
+      }
+      await conn.query('DELETE FROM programmes WHERE university_id=?', [uniId]);
+      for (const pr of programmes) {
+        await conn.query('INSERT INTO programmes (id,name,dept,university_id,campus) VALUES (?,?,?,?,?)',
+          [uid('prog'), pr.name, pr.dept, uniId, pr.campus || null]);
+      }
+      await conn.commit();
+      return d;
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
+  },
   async saveStaffCombos(uniId, combos) {
     const d = await this._staffData(uniId); d.combos = combos;
     await this._saveStaffData(uniId, d); return d;

@@ -341,6 +341,46 @@ module.exports = {
     }
     return d;
   },
+  // Saves campuses and programmes together in one transaction so they can
+  // never desync from a partial failure the way two independent HTTP
+  // requests could (e.g. a deleted campus's programmes surviving because
+  // only the campuses save reached the server before a network hiccup) —
+  // either both replace-writes land, or neither does.
+  async saveStaffCampusesAndProgrammes(uniId, campuses, programmes) {
+    const pool = await getClient();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query('SELECT data FROM staff_data WHERE university_id=$1', [uniId]);
+      let d = { campuses: [], combos: {}, criteria: {} };
+      if (rows.length) { try { d = JSON.parse(rows[0].data); } catch { /* fallthrough */ } }
+      d.campuses = campuses;
+      d.programmes = programmes;
+      await client.query(
+        'INSERT INTO staff_data (university_id,data) VALUES ($1,$2) ON CONFLICT (university_id) DO UPDATE SET data=EXCLUDED.data',
+        [uniId, JSON.stringify(d)]);
+      await client.query('DELETE FROM campuses WHERE university_id=$1', [uniId]);
+      for (const c of campuses) {
+        const cid = uid('camp');
+        await client.query('INSERT INTO campuses (id,university_id,name) VALUES ($1,$2,$3)', [cid, uniId, c.name]);
+        for (const dep of (c.depts || [])) {
+          await client.query('INSERT INTO campus_departments (campus_id,department) VALUES ($1,$2)', [cid, dep]);
+        }
+      }
+      await client.query('DELETE FROM programmes WHERE university_id=$1', [uniId]);
+      for (const pr of programmes) {
+        await client.query('INSERT INTO programmes (id,name,dept,university_id,campus) VALUES ($1,$2,$3,$4,$5)',
+          [uid('prog'), pr.name, pr.dept, uniId, pr.campus || null]);
+      }
+      await client.query('COMMIT');
+      return d;
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  },
   async saveStaffCombos(uniId, combos) {
     const d = await this._staffData(uniId); d.combos = combos;
     await this._saveStaffData(uniId, d); return d;

@@ -285,6 +285,16 @@ app.get('/staff/:uniId/data', auth(), requireStaffOfUniversity(), wrap(async (re
 app.put('/staff/:uniId/campuses', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.saveStaffCampuses(req.params.uniId, (req.body && req.body.campuses) || []));
 }));
+// Saves campuses and programmes together in one atomic request — used by
+// StaffCampusesScreen instead of two separate PUTs, so a network hiccup
+// can never leave one saved and the other not (see saveStaffCampusesAndProgrammes).
+app.put('/staff/:uniId/campuses-programmes', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
+  res.json(await db.saveStaffCampusesAndProgrammes(
+    req.params.uniId,
+    (req.body && req.body.campuses) || [],
+    (req.body && req.body.programmes) || [],
+  ));
+}));
 app.put('/staff/:uniId/combos', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.saveStaffCombos(req.params.uniId, (req.body && req.body.combos) || {}));
 }));

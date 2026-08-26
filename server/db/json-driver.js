@@ -152,6 +152,16 @@ module.exports = {
     save();
     return db.staffData[uniId];
   },
+  // Saves campuses and programmes together in one write so they can never
+  // desync from a partial failure the way two independent requests could
+  // (e.g. a deleted campus's programmes surviving because only the
+  // campuses save reached the server) — already atomic here since it's one
+  // synchronous in-memory mutation plus one save() to disk.
+  async saveStaffCampusesAndProgrammes(uniId, campuses, programmes) {
+    await this.saveStaffCampuses(uniId, campuses);
+    await this.saveStaffProgrammes(uniId, programmes);
+    return db.staffData[uniId];
+  },
   async saveStaffCombos(uniId, combos) {
     db.staffData = db.staffData || {};
     db.staffData[uniId] = { ...(db.staffData[uniId] || { campuses:[], criteria:{} }), combos };

@@ -312,6 +312,10 @@ class Api {
       Map<String, dynamic>.from(await _get('/staff/$uniId/data'));
   static Future<void> saveStaffCampuses(String uniId, List campuses) =>
       _put('/staff/$uniId/campuses', {'campuses': campuses});
+  // Saves both together in one request so they can never desync from a
+  // network hiccup hitting just one of two separate saves.
+  static Future<void> saveStaffCampusesAndProgrammes(String uniId, List campuses, List programmes) =>
+      _put('/staff/$uniId/campuses-programmes', {'campuses': campuses, 'programmes': programmes});
   static Future<void> saveStaffCombos(String uniId, Map combos) =>
       _put('/staff/$uniId/combos', {'combos': combos});
   static Future<void> saveStaffProgrammes(String uniId, List programmes) =>
@@ -3961,10 +3965,10 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
       final rows = allProgrammes
           .map((p) => {'name': p['name'], 'dept': p['dept'], 'campus': p['campus']})
           .toList();
-      await Future.wait([
-        Api.saveStaffCampuses(_staffUni, campuses),
-        Api.saveStaffProgrammes(_staffUni, rows),
-      ]);
+      // One atomic request — two independent saves could partially fail
+      // (e.g. a deleted campus's programmes surviving because only the
+      // campuses save reached the server), silently losing data.
+      await Api.saveStaffCampusesAndProgrammes(_staffUni, campuses, rows);
       if (mounted) toast(context, 'Saved');
     } catch (e) { if (mounted) toast(context, e.toString()); }
   }
