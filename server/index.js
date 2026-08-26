@@ -12,7 +12,12 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Default express.json() body limit is 100kb — a base64-encoded photo
+// (especially a PNG, which image_picker's imageQuality doesn't recompress)
+// can exceed that even after resizing to a small thumbnail. A rejected body
+// used to fall through to Express's default HTML error page, which the
+// client then failed to parse as JSON ("Unexpected token '<'").
+app.use(express.json({ limit: '8mb' }));
 
 // ---- helpers --------------------------------------------------------------
 const sign = (user) => jwt.sign(
@@ -441,6 +446,17 @@ app.post('/reset-password', wrap(async (req, res) => {
   await db.resetPassword(email, otp, hashed);
   res.json({ ok: true });
 }));
+
+// Catches body-parser failures (oversized or malformed JSON) and anything
+// else Express would otherwise answer with its default HTML error page —
+// callers only ever get a real, parseable JSON error from this API.
+app.use((err, _req, res, _next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'That file is too large. Try a smaller photo.' });
+  }
+  console.error(err);
+  res.status(err && err.status ? err.status : 400).json({ error: (err && err.message) || 'Request failed' });
+});
 
 // ---- boot -----------------------------------------------------------------
 (async () => {
