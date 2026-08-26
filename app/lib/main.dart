@@ -1902,24 +1902,24 @@ class _CompareScreenState extends State<CompareScreen> {
                 ]),
                 const SizedBox(height: 12),
                 Builder(builder: (_) {
-                  Widget? mapFor(Map<String, dynamic>? uni) {
+                  Widget? cardFor(Map<String, dynamic>? uni) {
                     if (uni == null) return null;
-                    final campusName = resolveDisplayCampusName(uni, _allProgrammes);
                     final campusPins = uni['campusPins'] as Map?;
-                    final pins = campusName != null ? (campusPins?[campusName] as Map?) : null;
-                    if (pins == null) return null;
-                    final map = campusLocationMap(Map<String, dynamic>.from(pins), height: 110);
-                    return map is SizedBox ? null : map;
+                    if (campusPins == null || campusPins.isEmpty) return null;
+                    return CampusDistancesCard(
+                      campusPins: Map<String, dynamic>.from(campusPins),
+                      initialCampusName: resolveDisplayCampusName(uni, _allProgrammes),
+                    );
                   }
-                  final lMap = mapFor(ld);
-                  final rMap = mapFor(rd);
-                  if (lMap == null && rMap == null) return const SizedBox.shrink();
+                  final lCard = cardFor(ld);
+                  final rCard = cardFor(rd);
+                  if (lCard == null && rCard == null) return const SizedBox.shrink();
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 16),
                     child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Expanded(child: lMap ?? const SizedBox.shrink()),
+                      Expanded(child: lCard ?? const SizedBox.shrink()),
                       const SizedBox(width: 10),
-                      Expanded(child: rMap ?? const SizedBox.shrink()),
+                      Expanded(child: rCard ?? const SizedBox.shrink()),
                     ]),
                   );
                 }),
@@ -2093,33 +2093,6 @@ double? resolveHomeDistanceKm(Map<String, dynamic> uni, List<dynamic> allProgram
   return null;
 }
 
-List<Marker> _markersForPins(Map<String, dynamic> pins) {
-  final markers = <Marker>[];
-  final school = pins['schoolLocation'] as Map?;
-  if (school != null) {
-    markers.add(Marker(
-      point: LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble()),
-      width: 34, height: 34,
-      child: const Icon(Icons.school, color: C.greenDark, size: 34),
-    ));
-  }
-  for (final s in (pins['busStops'] as List? ?? const []).cast<Map>()) {
-    markers.add(Marker(
-      point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
-      width: 28, height: 28,
-      child: const Icon(Icons.directions_bus, color: Color(0xFF2A5C8F), size: 28),
-    ));
-  }
-  for (final s in (pins['motoStops'] as List? ?? const []).cast<Map>()) {
-    markers.add(Marker(
-      point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
-      width: 28, height: 28,
-      child: const Icon(Icons.two_wheeler, color: Color(0xFFC25A1F), size: 28),
-    ));
-  }
-  return markers;
-}
-
 Widget _kmChip(IconData icon, String label, Color color) => Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(999)),
@@ -2130,45 +2103,78 @@ Widget _kmChip(IconData icon, String label, Color color) => Container(
       ]),
     );
 
-/// Read-only map showing a campus's school/bus/moto pins, with the
-/// pre-computed distances between them — used on DetailScreen and
-/// CompareScreen. Renders nothing if the resolved campus has no school pin
-/// yet, matching the "never fabricate" rule used everywhere else.
-Widget campusLocationMap(Map<String, dynamic>? pins, {double height = 150}) {
-  if (pins == null || pins['schoolLocation'] == null) return const SizedBox.shrink();
-  final school = pins['schoolLocation'] as Map;
-  final busKm = pins['schoolToBusKm'] as num?;
-  final motoKm = pins['schoolToMotoKm'] as num?;
-  return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: SizedBox(
-        height: height,
-        child: FlutterMap(
-          options: MapOptions(
-            initialCenter: LatLng((school['lat'] as num).toDouble(), (school['lng'] as num).toDouble()),
-            initialZoom: 14,
-            interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
+/// Campus-to-bus / campus-to-moto distances for a university, with
+/// left/right navigation when more than one campus has pins set — used on
+/// DetailScreen and CompareScreen. Renders nothing if no campus has any
+/// distance set yet, matching the "never fabricate" rule used everywhere else.
+class CampusDistancesCard extends StatefulWidget {
+  final Map<String, dynamic> campusPins; // campusName -> pins map
+  final String? initialCampusName;
+  const CampusDistancesCard({super.key, required this.campusPins, this.initialCampusName});
+
+  @override
+  State<CampusDistancesCard> createState() => _CampusDistancesCardState();
+}
+
+class _CampusDistancesCardState extends State<CampusDistancesCard> {
+  late int _index;
+
+  List<MapEntry<String, dynamic>> get _entries => widget.campusPins.entries.where((e) {
+        final v = e.value;
+        return v is Map && (v['schoolToBusKm'] != null || v['schoolToMotoKm'] != null);
+      }).toList();
+
+  @override
+  void initState() {
+    super.initState();
+    final i = widget.initialCampusName != null
+        ? _entries.indexWhere((e) => e.key == widget.initialCampusName)
+        : -1;
+    _index = i >= 0 ? i : 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = _entries;
+    if (entries.isEmpty) return const SizedBox.shrink();
+    final i = _index.clamp(0, entries.length - 1);
+    final name = entries[i].key;
+    final pins = entries[i].value as Map;
+    final busKm = pins['schoolToBusKm'] as num?;
+    final motoKm = pins['schoolToMotoKm'] as num?;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(
+            child: Text(name,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink, fontSize: 13)),
           ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.unimatch.gasabo',
+          if (entries.length > 1) ...[
+            InkWell(
+              onTap: i > 0 ? () => setState(() => _index = i - 1) : null,
+              child: Icon(Icons.chevron_left, size: 18, color: i > 0 ? C.ink : C.border),
             ),
-            MarkerLayer(markers: _markersForPins(pins)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text('${i + 1}/${entries.length}', style: const TextStyle(fontSize: 11, color: C.muted)),
+            ),
+            InkWell(
+              onTap: i < entries.length - 1 ? () => setState(() => _index = i + 1) : null,
+              child: Icon(Icons.chevron_right, size: 18, color: i < entries.length - 1 ? C.ink : C.border),
+            ),
           ],
-        ),
-      ),
-    ),
-    if (busKm != null || motoKm != null)
-      Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: Wrap(spacing: 6, runSpacing: 6, children: [
+        ]),
+        const SizedBox(height: 8),
+        Wrap(spacing: 6, runSpacing: 6, children: [
           if (busKm != null) _kmChip(Icons.directions_bus, 'Bus · ${busKm.toStringAsFixed(2)} km', const Color(0xFF2A5C8F)),
           if (motoKm != null) _kmChip(Icons.two_wheeler, 'Moto · ${motoKm.toStringAsFixed(2)} km', const Color(0xFFC25A1F)),
         ]),
-      ),
-  ]);
+      ]),
+    );
+  }
 }
 
 /// Resolves what to show a student for one criterion code on DetailScreen —
@@ -3671,18 +3677,18 @@ class _DetailScreenState extends State<DetailScreen> {
                     )),
               const SizedBox(height: 12),
               Builder(builder: (_) {
-                final campusName = resolveDisplayCampusName(u, allProgrammes);
                 final campusPins = u['campusPins'] as Map?;
-                final pins = campusName != null ? (campusPins?[campusName] as Map?) : null;
-                final map = campusLocationMap(pins != null ? Map<String, dynamic>.from(pins) : null);
-                if (map is SizedBox) return const SizedBox.shrink();
+                if (campusPins == null || campusPins.isEmpty) return const SizedBox.shrink();
+                final campusName = resolveDisplayCampusName(u, allProgrammes);
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('Campus location${campusName != null ? ' · $campusName' : ''}',
-                        style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                    const Text('Getting there', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
                     const SizedBox(height: 8),
-                    map,
+                    CampusDistancesCard(
+                      campusPins: Map<String, dynamic>.from(campusPins),
+                      initialCampusName: campusName,
+                    ),
                   ]),
                 );
               }),
