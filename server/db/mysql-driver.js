@@ -146,12 +146,14 @@ module.exports = {
     return { id, name, email, role, universityId: universityId || null, track: track || null };
   },
 
-  async updateUser(id, { name, track, photo }) {
+  async updateUser(id, { name, track, photo, homeArea, homeLat, homeLng }) {
     const p = await getPool();
     // COALESCE: a field omitted from the request body leaves the stored value untouched.
-    await p.query('UPDATE users SET name=COALESCE(?,name), track=COALESCE(?,track), photo=COALESCE(?,photo) WHERE id=?',
-      [name || null, track || null, photo || null, id]);
-    const [rows] = await p.query('SELECT id,name,track,photo FROM users WHERE id=?', [id]);
+    await p.query(
+      'UPDATE users SET name=COALESCE(?,name), track=COALESCE(?,track), photo=COALESCE(?,photo), ' +
+      'home_area=COALESCE(?,home_area), home_lat=COALESCE(?,home_lat), home_lng=COALESCE(?,home_lng) WHERE id=?',
+      [name || null, track || null, photo || null, homeArea || null, homeLat ?? null, homeLng ?? null, id]);
+    const [rows] = await p.query('SELECT id,name,track,photo,home_area,home_lat,home_lng FROM users WHERE id=?', [id]);
     return rows[0];
   },
 
@@ -536,6 +538,11 @@ module.exports = {
       'ON DUPLICATE KEY UPDATE stars=VALUES(stars)',
       [uid('rt'), userId, universityId, stars]);
     return { ok: true };
+  },
+  async myRating({ userId, universityId }) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT stars FROM ratings WHERE user_id=? AND university_id=?', [userId, universityId]);
+    return { stars: rows[0] ? rows[0].stars : null };
   },
 
   async recordCriteriaSelections(userId, codes) {

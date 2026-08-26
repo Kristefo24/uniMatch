@@ -133,11 +133,13 @@ module.exports = {
     return { id, name, email, role, universityId: universityId || null, track: track || null };
   },
 
-  async updateUser(id, { name, track, photo }) {
+  async updateUser(id, { name, track, photo, homeArea, homeLat, homeLng }) {
     // COALESCE: a field omitted from the request body leaves the stored value untouched.
     const { rows } = await q(
-      'UPDATE users SET name=COALESCE($1,name), track=COALESCE($2,track), photo=COALESCE($3,photo) WHERE id=$4 RETURNING id,name,track,photo',
-      [name || null, track || null, photo || null, id]);
+      'UPDATE users SET name=COALESCE($1,name), track=COALESCE($2,track), photo=COALESCE($3,photo), ' +
+      'home_area=COALESCE($4,home_area), home_lat=COALESCE($5,home_lat), home_lng=COALESCE($6,home_lng) WHERE id=$7 ' +
+      'RETURNING id,name,track,photo,home_area,home_lat,home_lng',
+      [name || null, track || null, photo || null, homeArea || null, homeLat ?? null, homeLng ?? null, id]);
     return rows[0];
   },
 
@@ -480,6 +482,10 @@ module.exports = {
       'ON CONFLICT (user_id,university_id) DO UPDATE SET stars=EXCLUDED.stars',
       [uid('rt'), userId, universityId, stars]);
     return { ok: true };
+  },
+  async myRating({ userId, universityId }) {
+    const { rows } = await q('SELECT stars FROM ratings WHERE user_id=$1 AND university_id=$2', [userId, universityId]);
+    return { stars: rows[0] ? rows[0].stars : null };
   },
 
   async recordCriteriaSelections(userId, codes) {

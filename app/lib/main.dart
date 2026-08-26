@@ -209,10 +209,16 @@ class Api {
     return res;
   }
 
-  static Future<Map<String, dynamic>> updateMe({String? name, String? track, String? photo}) => _put('/me', {
+  static Future<Map<String, dynamic>> updateMe({
+    String? name, String? track, String? photo, String? homeArea, double? homeLat, double? homeLng,
+  }) =>
+      _put('/me', {
         if (name != null) 'name': name,
         if (track != null) 'track': track,
         if (photo != null) 'photo': photo,
+        if (homeArea != null) 'homeArea': homeArea,
+        if (homeLat != null) 'homeLat': homeLat,
+        if (homeLng != null) 'homeLng': homeLng,
       });
 
   /// The student's own last saved ranking snapshot ({ranked, criteria,
@@ -295,6 +301,14 @@ class Api {
 
   static Future<void> rate(String universityId, int stars) =>
       _post('/rate', {'universityId': universityId, 'stars': stars});
+
+  /// The current student's own previously-submitted rating for a university,
+  /// or null if they've never rated it — lets the 5-star widget remember
+  /// their choice across sessions instead of always starting at 0.
+  static Future<int?> myRating(String universityId) async {
+    final res = await _get('/rate/$universityId');
+    return res is Map ? res['stars'] as int? : null;
+  }
 
   static Future<List<dynamic>> staffRequests() async =>
       await _get('/staff-requests') as List<dynamic>;
@@ -927,6 +941,9 @@ class _LoginScreenState extends State<LoginScreen> {
       Session.uniId = user['universityId'];
       Session.track = user['track'];
       Session.photo = user['photo'];
+      Session.homeArea = user['homeArea'] ?? '';
+      Session.homeLat = (user['homeLat'] as num?)?.toDouble();
+      Session.homeLng = (user['homeLng'] as num?)?.toDouble();
       _bumpAvatar();
       if (!mounted) return;
       _routeByRole(context, Session.role);
@@ -1168,6 +1185,10 @@ class _SignupScreenState extends State<SignupScreen> {
   List<dynamic> universities = [];     // loaded for the staff dropdown
   List<dynamic> combos = [];           // loaded for the student combination dropdown
   bool loading = false;
+  bool universitiesLoading = false;
+  bool universitiesError = false;
+  bool combosLoading = false;
+  bool combosError = false;
 
   @override
   void initState() {
@@ -1177,20 +1198,22 @@ class _SignupScreenState extends State<SignupScreen> {
   }
 
   Future<void> _loadUniversities() async {
+    setState(() { universitiesLoading = true; universitiesError = false; });
     try {
       final list = await Api.universities();
-      if (mounted) setState(() => universities = list);
+      if (mounted) setState(() { universities = list; universitiesLoading = false; });
     } catch (_) {
-      // Dropdown just stays empty until the server is reachable.
+      if (mounted) setState(() { universitiesLoading = false; universitiesError = true; });
     }
   }
 
-  Future<void> _loadCombinations() async {
+  Future<void> _loadCombinations({bool refresh = false}) async {
+    setState(() { combosLoading = true; combosError = false; });
     try {
-      final list = await Api.combinations();
-      if (mounted) setState(() => combos = list);
+      final list = await Api.combinations(refresh: refresh);
+      if (mounted) setState(() { combos = list; combosLoading = false; });
     } catch (_) {
-      // Dropdown just stays empty until the server is reachable.
+      if (mounted) setState(() { combosLoading = false; combosError = true; });
     }
   }
 
@@ -1285,37 +1308,65 @@ class _SignupScreenState extends State<SignupScreen> {
               // ---- STUDENT: A2 combination ----
               if (role == 'student') ...[
                 _label('A2 COMBINATION'),
-                DropdownButtonFormField<String>(
-                  value: track,
-                  isExpanded: true,
-                  decoration: fieldDeco('Select your combination'),
-                  hint: const Text('Select your combination'),
-                  items: combos.map((c) => DropdownMenuItem(
-                      value: c['code'] as String,
-                      child: Text('${c['code']} (${List<String>.from(c['subjects'] ?? const []).join(' / ')})'))).toList(),
-                  onChanged: (v) => setState(() => track = v),
-                ),
+                if (combosLoading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: LinearProgressIndicator(color: C.green),
+                  )
+                else if (combosError)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(children: [
+                      const Expanded(child: Text("Couldn't load combinations", style: TextStyle(color: C.muted, fontSize: 12))),
+                      TextButton(onPressed: () => _loadCombinations(refresh: true), child: const Text('Retry')),
+                    ]),
+                  )
+                else
+                  DropdownButtonFormField<String>(
+                    value: track,
+                    isExpanded: true,
+                    decoration: fieldDeco('Select your combination'),
+                    hint: const Text('Select your combination'),
+                    items: combos.map((c) => DropdownMenuItem(
+                        value: c['code'] as String,
+                        child: Text('${c['code']} (${List<String>.from(c['subjects'] ?? const []).join(' / ')})'))).toList(),
+                    onChanged: (v) => setState(() => track = v),
+                  ),
                 const SizedBox(height: 16),
               ],
 
               // ---- STAFF: university you work for ----
               if (role == 'staff') ...[
                 _label('UNIVERSITY YOU WORK FOR'),
-                DropdownButtonFormField<String>(
-                  value: uniId,
-                  isExpanded: true,
-                  decoration: fieldDeco('Select your university…'),
-                  hint: const Text('Select your university…'),
-                  items: universities.map((u) {
-                    final m = u as Map;
-                    return DropdownMenuItem<String>(
-                      value: m['id'] as String,
-                      child: Text('${m['abbr']} — ${m['name']}',
-                          overflow: TextOverflow.ellipsis),
-                    );
-                  }).toList(),
-                  onChanged: (v) => setState(() => uniId = v),
-                ),
+                if (universitiesLoading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: LinearProgressIndicator(color: C.green),
+                  )
+                else if (universitiesError)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(children: [
+                      const Expanded(child: Text("Couldn't load universities", style: TextStyle(color: C.muted, fontSize: 12))),
+                      TextButton(onPressed: _loadUniversities, child: const Text('Retry')),
+                    ]),
+                  )
+                else
+                  DropdownButtonFormField<String>(
+                    value: uniId,
+                    isExpanded: true,
+                    decoration: fieldDeco('Select your university…'),
+                    hint: const Text('Select your university…'),
+                    items: universities.map((u) {
+                      final m = u as Map;
+                      return DropdownMenuItem<String>(
+                        value: m['id'] as String,
+                        child: Text('${m['abbr']} — ${m['name']}',
+                            overflow: TextOverflow.ellipsis),
+                      );
+                    }).toList(),
+                    onChanged: (v) => setState(() => uniId = v),
+                  ),
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
                   child: Text('Your account stays pending until an admin confirms you work at this university.',
@@ -3231,6 +3282,8 @@ class _LocationScreenState extends State<LocationScreen> {
                   Session.homeArea = (picked ?? addr.text).trim();
                   Session.homeLat = pin?.latitude;
                   Session.homeLng = pin?.longitude;
+                  Api.updateMe(homeArea: Session.homeArea, homeLat: Session.homeLat, homeLng: Session.homeLng)
+                      .catchError((_) => <String, dynamic>{});
                   Navigator.push(context, MaterialPageRoute(builder: (_) => ResultsScreen(criteria: widget.criteria)));
                 },
                 icon: const Icon(Icons.bolt, size: 18),
@@ -3491,6 +3544,9 @@ class _DetailScreenState extends State<DetailScreen> {
   void initState() {
     super.initState();
     _future = Api.university(widget.id);
+    Api.myRating(widget.id).then((s) {
+      if (mounted) setState(() => myRating = s ?? 0);
+    }).catchError((_) {});
     Api.universityAnswers(widget.id).then((d) {
       if (mounted) {
         setState(() {
@@ -3639,7 +3695,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     _heroDiv(),
                     _heroStat(programmeCount != null ? '$programmeCount' : '—', 'PROGRAMMES'),
                     _heroDiv(),
-                    _heroStat(kmHome != null ? kmHome.toStringAsFixed(2) : '—', 'KM HOME'),
+                    _heroStat(ratingCount > 0 ? avgRating!.toStringAsFixed(1) : '—', 'RATING'),
                   ]),
                 ]),
               ),

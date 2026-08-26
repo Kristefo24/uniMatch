@@ -71,7 +71,10 @@ app.post('/login', wrap(async (req, res) => {
     const confirmed = reqs.some(r => r.email.toLowerCase() === user.email.toLowerCase() && r.status === 'confirmed');
     if (!confirmed) return res.status(403).json({ error: 'Your staff account is awaiting admin confirmation' });
   }
-  res.json({ token: sign(user), user: { id: user.id, name: user.name, email: user.email, role: user.role, universityId: user.universityId || null, track: user.track || null, photo: user.photo || null } });
+  res.json({ token: sign(user), user: { id: user.id, name: user.name, email: user.email, role: user.role, universityId: user.universityId || null, track: user.track || null, photo: user.photo || null,
+    homeArea: user.homeArea ?? user.home_area ?? null,
+    homeLat: user.homeLat ?? user.home_lat ?? null,
+    homeLng: user.homeLng ?? user.home_lng ?? null } });
 }));
 
 app.put('/me', auth(), wrap(async (req, res) => {
@@ -267,6 +270,9 @@ app.delete('/shortlist/:universityId', auth(), wrap(async (req, res) => {
 }));
 app.post('/rate', auth(), wrap(async (req, res) => {
   res.json(await db.recordRating({ userId: req.user?.id, universityId: req.body.universityId, stars: req.body.stars }));
+}));
+app.get('/rate/:universityId', auth(), wrap(async (req, res) => {
+  res.json(await db.myRating({ userId: req.user.id, universityId: req.params.universityId }));
 }));
 
 // ---- admin ----------------------------------------------------------------

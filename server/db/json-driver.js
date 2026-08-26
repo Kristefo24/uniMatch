@@ -276,6 +276,10 @@ module.exports = {
     save();
     return { ok: true };
   },
+  async myRating({ userId, universityId }) {
+    const r = db.ratings.find(x => x.userId === userId && x.universityId === universityId);
+    return { stars: r ? r.stars : null };
+  },
 
   async recordCriteriaSelections(userId, codes) {
     for (const code of codes) {
@@ -398,14 +402,18 @@ module.exports = {
   },
 
   // ---- self-service profile update ----
-  async updateUser(id, { name, track, photo }) {
+  async updateUser(id, { name, track, photo, homeArea, homeLat, homeLng }) {
     const u = db.users.find(x => x.id === id);
     if (!u) throw new Error('User not found');
     if (name != null) u.name = name;
     if (track !== undefined) u.track = track;
     if (photo !== undefined) u.photo = photo;
+    if (homeArea !== undefined) u.homeArea = homeArea;
+    if (homeLat !== undefined) u.homeLat = homeLat;
+    if (homeLng !== undefined) u.homeLng = homeLng;
     save();
-    return { id: u.id, name: u.name, track: u.track || null, photo: u.photo || null };
+    return { id: u.id, name: u.name, track: u.track || null, photo: u.photo || null,
+      homeArea: u.homeArea || null, homeLat: u.homeLat ?? null, homeLng: u.homeLng ?? null };
   },
 
   async setResetOtp(userId, otp, expiresAt) {
