@@ -138,13 +138,15 @@ module.exports = {
 
   async listProgrammes(dept) {
     const real = dept ? db.programmes.filter(p => p.dept === dept) : db.programmes;
-    const covered = new Set(real.map(p => `${p.universityId}::${p.dept}`));
+    // Scoped by campus too -- a real programme at one campus must not
+    // suppress another campus's placeholder for the same department name.
+    const covered = new Set(real.map(p => `${p.universityId}::${p.campus}::${p.dept}`));
     const synthetic = [];
     for (const u of db.universities) {
       for (const c of (u.campuses || [])) {
         for (const d of (c.depts || [])) {
           if (dept && d !== dept) continue;
-          const key = `${u.id}::${d}`;
+          const key = `${u.id}::${c.name}::${d}`;
           if (covered.has(key)) continue;
           covered.add(key);
           synthetic.push({ id: `dept-${u.id}-${slug(d)}`, name: d, dept: d, universityId: u.id, campus: c.name, years: null });

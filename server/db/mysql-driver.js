@@ -241,13 +241,15 @@ module.exports = {
       ? await p.query('SELECT * FROM programmes WHERE dept=?', [dept])
       : await p.query('SELECT * FROM programmes');
     const real = rows.map(r => ({ id: r.id, name: r.name, dept: r.dept, campus: r.campus || '', years: r.years, universityId: r.university_id }));
-    const covered = new Set(real.map(p2 => `${p2.universityId}::${p2.dept}`));
+    // Scoped by campus too -- a real programme at one campus must not
+    // suppress another campus's placeholder for the same department name.
+    const covered = new Set(real.map(p2 => `${p2.universityId}::${p2.campus}::${p2.dept}`));
     const [depts] = dept
       ? await p.query('SELECT c.university_id, cd.department, c.name AS campus FROM campus_departments cd JOIN campuses c ON c.id=cd.campus_id WHERE cd.department=?', [dept])
       : await p.query('SELECT c.university_id, cd.department, c.name AS campus FROM campus_departments cd JOIN campuses c ON c.id=cd.campus_id');
     const synthetic = [];
     for (const row of depts) {
-      const key = `${row.university_id}::${row.department}`;
+      const key = `${row.university_id}::${row.campus}::${row.department}`;
       if (covered.has(key)) continue;
       covered.add(key);
       synthetic.push({ id: `dept-${row.university_id}-${slug(row.department)}`, name: row.department, dept: row.department, campus: row.campus, years: null, universityId: row.university_id });

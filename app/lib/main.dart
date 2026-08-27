@@ -2475,10 +2475,15 @@ class DepartmentScreen extends StatefulWidget {
 class _DepartmentScreenState extends State<DepartmentScreen> {
   late Future<List<dynamic>> _future;
   final TextEditingController _search = TextEditingController();
+  Map<String, Map> uniById = {};
+
   @override
   void initState() {
     super.initState();
     _future = Api.programmes(null);
+    Api.universities().then((list) {
+      if (mounted) setState(() => uniById = { for (final u in list) (u as Map)['id'] as String: u });
+    }).catchError((_) {});
     _search.addListener(() => setState(() {}));
   }
 
@@ -2486,6 +2491,55 @@ class _DepartmentScreenState extends State<DepartmentScreen> {
   void dispose() {
     _search.dispose();
     super.dispose();
+  }
+
+  /// True only if the student's own combination is explicitly listed
+  /// against at least one programme in this department, at any university.
+  /// A programme/university with no combos configured at all does NOT
+  /// count as a match -- by product decision, unconfigured means blocked
+  /// here (unlike the purely informational eligibilityCard elsewhere,
+  /// which stays open when unset).
+  bool _hasMatchingOffering(List<Map> deptProgrammes) {
+    final track = Session.track;
+    if (track == null) return false;
+    for (final p in deptProgrammes) {
+      final uni = uniById['${p['universityId']}'];
+      final raw = (uni?['combos'] as Map?)?['${p['name']}'];
+      if (raw is! Map) continue;
+      final matched = raw.keys.any((k) =>
+          '$k' == track && subjectPairs(List<String>.from(raw[k] as List)).isNotEmpty);
+      if (matched) return true;
+    }
+    return false;
+  }
+
+  Future<void> _showNotEligibleDialog(String dept, List<Map> deptProgrammes) {
+    final track = Session.track;
+    final accepted = <String>{};
+    for (final p in deptProgrammes) {
+      final raw = (uniById['${p['universityId']}']?['combos'] as Map?)?['${p['name']}'];
+      if (raw is Map) {
+        raw.forEach((k, v) {
+          if (subjectPairs(List<String>.from(v as List)).isNotEmpty) accepted.add('$k');
+        });
+      }
+    }
+    final String msg;
+    if (track == null) {
+      msg = "Add your A2 combination to your profile first so we can check whether you're eligible to enter $dept.";
+    } else if (accepted.isEmpty) {
+      msg = 'Your $track combination is not eligible to enter $dept — no university has set up combination requirements for it yet.';
+    } else {
+      msg = 'Your $track combination is not eligible to enter $dept. Accepted combinations: ${accepted.join(', ')}.';
+    }
+    return showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Not eligible for this department'),
+        content: Text(msg),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
   }
 
   @override
@@ -2534,27 +2588,44 @@ class _DepartmentScreenState extends State<DepartmentScreen> {
                 child: GridView.count(
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
                   crossAxisCount: 2, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.2,
-                  children: depts.map((d) => GestureDetector(
-                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProgrammeScreen(dept: d))),
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                          color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: C.border)),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Container(
-                          width: 38, height: 38,
-                          decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(11)),
-                          child: Icon(iconForField(d), color: C.green, size: 19),
+                  children: depts.map((d) {
+                    final deptProgrammes = progs.where((p) => '${(p as Map)['dept']}' == d).cast<Map>().toList();
+                    final eligible = _hasMatchingOffering(deptProgrammes);
+                    return GestureDetector(
+                      onTap: () {
+                        if (!eligible) {
+                          _showNotEligibleDialog(d, deptProgrammes);
+                          return;
+                        }
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => ProgrammeScreen(dept: d)));
+                      },
+                      child: Opacity(
+                        opacity: eligible ? 1 : 0.55,
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                              color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: C.border)),
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Container(
+                              width: 38, height: 38,
+                              decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(11)),
+                              child: Icon(iconForField(d), color: C.green, size: 19),
+                            ),
+                            const Spacer(),
+                            Text(d, maxLines: 3, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 13, height: 1.2)),
+                            const SizedBox(height: 3),
+                            Text(
+                              eligible
+                                  ? '${byDept[d]!.length} universit${byDept[d]!.length == 1 ? 'y' : 'ies'}'
+                                  : 'Not open for your combination',
+                              style: const TextStyle(color: C.muted, fontSize: 10.5),
+                            ),
+                          ]),
                         ),
-                        const Spacer(),
-                        Text(d, maxLines: 3, overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 13, height: 1.2)),
-                        const SizedBox(height: 3),
-                        Text('${byDept[d]!.length} universit${byDept[d]!.length == 1 ? 'y' : 'ies'}',
-                            style: const TextStyle(color: C.muted, fontSize: 10.5)),
-                      ]),
-                    ),
-                  )).toList(),
+                      ),
+                    );
+                  }).toList(),
                 ),
               ),
             ],
