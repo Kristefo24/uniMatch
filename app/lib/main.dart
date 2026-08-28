@@ -4315,13 +4315,26 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
     final oldName = existing?['name'] as String?;
     final name = TextEditingController(text: existing?['name'] ?? '');
     final picked = Set<String>.from(existing?['depts'] ?? const <String>[]);
-    // Scoped to THIS campus only — editing Remera's programmes never touches
-    // Main Campus's, even if both offer the same department.
+    final oldDepts = Set<String>.from(existing?['depts'] ?? const <String>[]);
+    // Departments claimed by every OTHER campus at this university -- if a
+    // department belongs to no other campus, any programme tagged with it is
+    // unambiguously this campus's, whatever (possibly stale) campus string it
+    // carries (e.g. left over from before this campus was renamed). Only
+    // exact campus-tag matching is trusted when a department is genuinely
+    // shared by more than one campus.
+    final otherDepts = <String>{};
+    for (var i = 0; i < campuses.length; i++) {
+      if (i == index) continue;
+      otherDepts.addAll(List<String>.from(campuses[i]['depts'] ?? const []));
+    }
     final localProgs = <String, List<String>>{};
-    if (oldName != null) {
-      for (final p in allProgrammes.where((p) => p['campus'] == oldName)) {
-        localProgs.putIfAbsent(p['dept'] as String, () => []).add(p['name'] as String);
-      }
+    for (final p in allProgrammes) {
+      final dept = p['dept'] as String;
+      if (!oldDepts.contains(dept)) continue;
+      final belongsHere = p['campus'] == oldName || !otherDepts.contains(dept);
+      if (!belongsHere) continue;
+      final list = localProgs.putIfAbsent(dept, () => []);
+      if (!list.any((n) => n.toLowerCase() == (p['name'] as String).toLowerCase())) list.add(p['name'] as String);
     }
     final saved = await showModalBottomSheet<bool>(
       context: context, isScrollControlled: true, backgroundColor: C.cream,
@@ -4404,7 +4417,13 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
                               side: const BorderSide(color: C.border),
                               onPressed: () async {
                                 final v = await _promptText('Programme name');
-                                if (v != null && v.trim().isNotEmpty) setSheet(() => progs.add(v.trim()));
+                                if (v == null || v.trim().isEmpty) return;
+                                final trimmed = v.trim();
+                                if (progs.any((n) => n.toLowerCase() == trimmed.toLowerCase())) {
+                                  toast(ctx, '$trimmed is already added to this department.');
+                                  return;
+                                }
+                                setSheet(() => progs.add(trimmed));
                               },
                             ),
                           ]),
@@ -4428,9 +4447,16 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
     setState(() {
       final row = {'name': newName, 'depts': picked.toList()};
       if (index != null) campuses[index] = row; else campuses.add(row);
-      // Replace this campus's programme rows with whatever the sheet ended
-      // up with, retagged to the (possibly renamed) campus.
-      if (oldName != null) allProgrammes.removeWhere((p) => p['campus'] == oldName);
+      // Remove every row this sheet considered "belonging" to this campus --
+      // the same broadened criteria used to populate localProgs above, not
+      // just an exact old-name tag match -- so a stale-tagged row can't
+      // survive alongside a freshly re-added duplicate. Retagged to
+      // (possibly renamed) newName below.
+      allProgrammes.removeWhere((p) {
+        final dept = p['dept'] as String;
+        if (!oldDepts.contains(dept)) return false;
+        return p['campus'] == oldName || !otherDepts.contains(dept);
+      });
       for (final d in picked) {
         for (final pname in (localProgs[d] ?? const <String>[])) {
           allProgrammes.add({'name': pname, 'dept': d, 'campus': newName});
