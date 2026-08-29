@@ -290,7 +290,7 @@ module.exports = {
       })),
       applications,
       students: db.users.filter(u => u.role === 'student')
-        .map(u => ({ name: u.name, email: u.email, home: u.home || '', suspended: !!u.suspended })),
+        .map(u => ({ name: u.name, email: u.email, home: u.homeArea || u.home || '', suspended: !!u.suspended })),
       staff: db.staffRequests.map(r => ({ name: r.name, email: r.email, status: r.status })),
       avgRating,
     };

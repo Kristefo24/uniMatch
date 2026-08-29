@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -13,6 +12,7 @@ import 'package:flutter_map/flutter_map.dart'
 import 'package:latlong2/latlong.dart' show LatLng;
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
+import 'csv_download_stub.dart' if (dart.library.html) 'csv_download_web.dart' as csv_download;
 
 /// Official application pages per seeded university id.
 const Map<String, String> kApplyUrls = {
@@ -3416,10 +3416,16 @@ String _fmtRwf(num v) => v >= 1000000
 class _ResultsScreenState extends State<ResultsScreen> {
   late Future<List<dynamic>> _future;
   Map<String, dynamic> staffAnswersById = {};
+  Map<String, String> labelByCode = {};
 
   @override
   void initState() {
     super.initState();
+    Api.criteria().then((list) {
+      if (mounted) {
+        setState(() => labelByCode = { for (final c in list) '${c['code']}': '${c['label']}' });
+      }
+    }).catchError((_) {});
     final wantsReligion = widget.criteria.any((c) => c['code'] == 'C25') &&
         Session.preferredReligion != null && Session.preferredReligion != 'No preference';
     final rankFuture = widget.preloaded != null
@@ -3457,6 +3463,32 @@ class _ResultsScreenState extends State<ResultsScreen> {
           Text(text, style: const TextStyle(fontSize: 10, color: C.muted, fontWeight: FontWeight.w600)),
         ]),
       );
+
+  /// Why this university ranked where it did -- its single strongest and
+  /// weakest contributing criterion, from the same TOPSIS computation that
+  /// produced its score. Real, data-driven; renders nothing if the code is
+  /// missing (e.g. only one criterion was selected).
+  Widget _reasonPill(IconData icon, String tag, String? label, Color color) {
+    if (label == null) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(tag, style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, color: color, letterSpacing: 0.3)),
+        ]),
+        const SizedBox(height: 3),
+        Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+            maxLines: 1, overflow: TextOverflow.ellipsis),
+      ]),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3505,6 +3537,9 @@ class _ResultsScreenState extends State<ResultsScreen> {
                         final scholarship = vals['C02'];
                         final accommodation = staffAns['accommodation'];
                         final badge = i == 0 ? 'TOP MATCH' : i == 1 ? '2ND' : i == 2 ? '3RD' : null;
+                        final outsideDept = u['outsideDept'] == true;
+                        final strongestLabel = labelByCode[u['bestCode']];
+                        final weakestLabel = labelByCode[u['worstCode']];
                         return GestureDetector(
                           onTap: () => Navigator.push(context,
                               MaterialPageRoute(builder: (_) => DetailScreen(id: u['id'], name: u['name']))),
@@ -3516,7 +3551,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                               border: Border.all(color: top1 ? C.green : C.border),
                             ),
                             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              if (badge != null)
+                              if (badge != null && !outsideDept)
                                 Padding(
                                   padding: const EdgeInsets.only(left: 13, top: 10),
                                   child: Container(
@@ -3524,6 +3559,20 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                     decoration: BoxDecoration(color: C.gold, borderRadius: BorderRadius.circular(999)),
                                     child: Text(badge, style: const TextStyle(
                                         color: C.greenDark, fontSize: 9.5, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+                                  ),
+                                ),
+                              if (outsideDept)
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(13, 10, 13, 0),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFB4472A).withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(color: const Color(0xFFB4472A).withValues(alpha: 0.4)),
+                                    ),
+                                    child: Text('Doesn\'t offer ${Session.selectedDept ?? 'your department'}',
+                                        style: const TextStyle(color: Color(0xFFB4472A), fontSize: 9.5, fontWeight: FontWeight.w700)),
                                   ),
                                 ),
                               Padding(
@@ -3555,6 +3604,15 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                     if (fee != null) _chip(_fmtRwf(fee as num), Icons.payments_outlined),
                                     if (scholarship != null) _chip('Scholarship ${scholarship is num ? scholarship.toStringAsFixed(1) : scholarship}/5', Icons.school_outlined),
                                     if (accommodation != null) _chip(accommodation == true ? 'On-campus' : 'Off-campus', Icons.home_outlined),
+                                  ]),
+                                ),
+                              if (strongestLabel != null || weakestLabel != null)
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(13, 0, 13, 10),
+                                  child: Row(children: [
+                                    Expanded(child: _reasonPill(Icons.trending_up, 'STRONGEST', strongestLabel, C.green)),
+                                    const SizedBox(width: 8),
+                                    Expanded(child: _reasonPill(Icons.trending_down, 'NEEDS WORK', weakestLabel, const Color(0xFFB4472A))),
                                   ]),
                                 ),
                               Padding(
@@ -4316,23 +4374,17 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
     final name = TextEditingController(text: existing?['name'] ?? '');
     final picked = Set<String>.from(existing?['depts'] ?? const <String>[]);
     final oldDepts = Set<String>.from(existing?['depts'] ?? const <String>[]);
-    // Departments claimed by every OTHER campus at this university -- if a
-    // department belongs to no other campus, any programme tagged with it is
-    // unambiguously this campus's, whatever (possibly stale) campus string it
-    // carries (e.g. left over from before this campus was renamed). Only
-    // exact campus-tag matching is trusted when a department is genuinely
-    // shared by more than one campus.
-    final otherDepts = <String>{};
-    for (var i = 0; i < campuses.length; i++) {
-      if (i == index) continue;
-      otherDepts.addAll(List<String>.from(campuses[i]['depts'] ?? const []));
-    }
+    // Departments can be legitimately assigned to more than one campus, so
+    // exact campus-name matching is always authoritative -- a stale tag
+    // (e.g. left over from a rename) is only safe to attribute here without
+    // asking staff when there's literally no other campus it could belong
+    // to (this university has just the one).
+    final soleCampus = oldName != null && campuses.length <= 1;
     final localProgs = <String, List<String>>{};
     for (final p in allProgrammes) {
       final dept = p['dept'] as String;
       if (!oldDepts.contains(dept)) continue;
-      final belongsHere = p['campus'] == oldName || !otherDepts.contains(dept);
-      if (!belongsHere) continue;
+      if (p['campus'] != oldName && !soleCampus) continue;
       final list = localProgs.putIfAbsent(dept, () => []);
       if (!list.any((n) => n.toLowerCase() == (p['name'] as String).toLowerCase())) list.add(p['name'] as String);
     }
@@ -4455,7 +4507,7 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
       allProgrammes.removeWhere((p) {
         final dept = p['dept'] as String;
         if (!oldDepts.contains(dept)) return false;
-        return p['campus'] == oldName || !otherDepts.contains(dept);
+        return p['campus'] == oldName || soleCampus;
       });
       for (final d in picked) {
         for (final pname in (localProgs[d] ?? const <String>[])) {
@@ -5818,18 +5870,18 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
     _future = Api.staffReport(_staffUni);
   }
 
-  Future<void> _copyApplicants(List apps) async {
-    await Clipboard.setData(ClipboardData(text: _toCsv(
+  void _downloadApplicants(List apps) {
+    csv_download.downloadCsv('applicants.csv', _toCsv(
         ['Name', 'Email', 'Home area'],
-        apps.map((a) => [a['name'], a['email'], a['home']]).toList())));
-    if (mounted) toast(context, 'Applicants CSV copied (${apps.length} rows)');
+        apps.map((a) => [a['name'], a['email'], a['home']]).toList()));
+    if (mounted) toast(context, 'Downloading applicants.csv (${apps.length} rows)');
   }
 
-  Future<void> _copyHomeAreas(List areas) async {
-    await Clipboard.setData(ClipboardData(text: _toCsv(
+  void _downloadHomeAreas(List areas) {
+    csv_download.downloadCsv('reach-by-area.csv', _toCsv(
         ['Home area', 'Applicants'],
-        areas.map((a) => [a['home'], a['count']]).toList())));
-    if (mounted) toast(context, 'Reach-by-area CSV copied (${areas.length} rows)');
+        areas.map((a) => [a['home'], a['count']]).toList()));
+    if (mounted) toast(context, 'Downloading reach-by-area.csv (${areas.length} rows)');
   }
 
   @override
@@ -5868,7 +5920,7 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('Applicants', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
                 TextButton.icon(
-                  onPressed: apps.isEmpty ? null : () => _copyApplicants(apps),
+                  onPressed: apps.isEmpty ? null : () => _downloadApplicants(apps),
                   icon: const Icon(Icons.download, size: 16, color: C.green),
                   label: const Text('CSV', style: TextStyle(color: C.green)),
                 ),
@@ -5892,7 +5944,7 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('Reach by home area', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
                 TextButton.icon(
-                  onPressed: areas.isEmpty ? null : () => _copyHomeAreas(areas),
+                  onPressed: areas.isEmpty ? null : () => _downloadHomeAreas(areas),
                   icon: const Icon(Icons.download, size: 16, color: C.green),
                   label: const Text('CSV', style: TextStyle(color: C.green)),
                 ),
@@ -7110,13 +7162,13 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
               GestureDetector(
                 onTap: () {
                   if (reportType == 'A2 applicants list') {
-                    _copyCsv('Applicants', ['Student', 'Email', 'University', 'Home area', 'Date'],
+                    _downloadCsv('Applicants', ['Student', 'Email', 'University', 'Home area', 'Date'],
                         apps.map((a) => [a['student'], a['email'], a['university'], a['home'], a['date']]).toList());
                   } else if (reportType == 'Most-chosen criteria') {
-                    _copyCsv(reportType, ['Criterion', 'Code', 'selections'],
+                    _downloadCsv(reportType, ['Criterion', 'Code', 'selections'],
                         rows.map((u) => [u['name'], u['abbr'], u['n']]).toList());
                   } else {
-                    _copyCsv(reportType, ['University', 'Abbr', rowUnit],
+                    _downloadCsv(reportType, ['University', 'Abbr', rowUnit],
                         rows.map((u) => [u['name'], u['abbr'], u['n']]).toList());
                   }
                 },
@@ -7178,9 +7230,10 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     );
   }
 
-  Future<void> _copyCsv(String name, List<String> header, List<List<dynamic>> rows) async {
-    await Clipboard.setData(ClipboardData(text: _toCsv(header, rows)));
-    if (mounted) toast(context, '$name CSV copied to clipboard (${rows.length} rows)');
+  void _downloadCsv(String name, List<String> header, List<List<dynamic>> rows) {
+    final filename = '${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-')}.csv';
+    csv_download.downloadCsv(filename, _toCsv(header, rows));
+    if (mounted) toast(context, 'Downloading $filename (${rows.length} rows)');
   }
 
   Widget _lbl(String t) => Padding(

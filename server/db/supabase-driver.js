@@ -489,14 +489,14 @@ module.exports = {
     const slBy = Object.fromEntries(slRows.map(r => [r.university_id, r.n]));
     const { rows: apps } = await q(
       'SELECT a.home_area, a.university_id, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id');
-    const { rows: students } = await q("SELECT name,email,home,suspended FROM users WHERE role='student'");
+    const { rows: students } = await q("SELECT name,email,home,home_area,suspended FROM users WHERE role='student'");
     const { rows: staff } = await q('SELECT name,email,status FROM staff_requests');
     const { rows: rt } = await q('SELECT AVG(stars)::float AS avg FROM ratings');
     const uName = Object.fromEntries(unis.map(u => [u.id, u.name]));
     return {
       universities: unis.map(u => ({ abbr: u.abbr, name: u.name, applications: applyBy[u.id] || 0, shortlists: slBy[u.id] || 0 })),
       applications: apps.map(a => ({ student: a.name || 'A2 graduate', email: a.email || '', university: uName[a.university_id] || a.university_id, home: a.home_area || '', date: '' })),
-      students: students.map(s => ({ name: s.name, email: s.email, home: s.home || '', suspended: !!s.suspended })),
+      students: students.map(s => ({ name: s.name, email: s.email, home: s.home_area || s.home || '', suspended: !!s.suspended })),
       staff: staff.map(s => ({ name: s.name, email: s.email, status: s.status })),
       avgRating: rt[0].avg != null ? Number(rt[0].avg.toFixed(2)) : null,
     };

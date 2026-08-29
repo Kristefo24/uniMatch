@@ -16,8 +16,21 @@ function topsis(universities, criteria) {
   if (!universities.length || !criteria.length) {
     return universities.map(u => ({ ...u, cc: 0 }));
   }
-  // 1. Build decision matrix.
-  const matrix = universities.map(u => criteria.map(c => Number(u.vals?.[c.code] ?? 0)));
+  // 1. Build decision matrix. A genuinely missing value is substituted with
+  // the worst REAL value seen in its column (respecting direction) -- never
+  // 0 -- so a university with no data on a cost criterion (lower is better)
+  // can't look artificially perfect just for having nothing recorded. A
+  // real, honestly-entered 0 is left untouched.
+  const rawCols = criteria.map(c => universities.map(u => {
+    const v = u.vals?.[c.code];
+    return (v === undefined || v === null) ? null : Number(v);
+  }));
+  const fallback = criteria.map((c, j) => {
+    const known = rawCols[j].filter(v => v !== null);
+    if (!known.length) return 0; // nobody has data for this criterion at all
+    return c.direction === 'cost' ? Math.max(...known) : Math.min(...known);
+  });
+  const matrix = universities.map((u, i) => criteria.map((c, j) => rawCols[j][i] === null ? fallback[j] : rawCols[j][i]));
 
   // 2. Vector-normalise each column.
   const norms = criteria.map((_, j) => {
@@ -39,12 +52,18 @@ function topsis(universities, criteria) {
     return c.direction === 'cost' ? Math.max(...col) : Math.min(...col);
   });
 
-  // 4. Distances + closeness coefficient.
+  // 4. Distances + closeness coefficient, plus which single criterion this
+  // university sits closest to (its strongest contributor) and furthest
+  // from (its weakest) the ideal-best -- lets the UI explain a ranking
+  // instead of showing a bare number.
   return universities.map((u, i) => {
     const dPlus = Math.sqrt(weighted[i].reduce((s, v, j) => s + (v - best[j]) ** 2, 0));
     const dMinus = Math.sqrt(weighted[i].reduce((s, v, j) => s + (v - worst[j]) ** 2, 0));
     const cc = (dPlus + dMinus) === 0 ? 0 : dMinus / (dPlus + dMinus);
-    return { ...u, cc };
+    const distToBest = weighted[i].map((v, j) => Math.abs(v - best[j]));
+    const bestJ = distToBest.indexOf(Math.min(...distToBest));
+    const worstJ = distToBest.indexOf(Math.max(...distToBest));
+    return { ...u, cc, bestCode: criteria[bestJ]?.code || null, worstCode: criteria[worstJ]?.code || null };
   }).sort((a, b) => b.cc - a.cc);
 }
 

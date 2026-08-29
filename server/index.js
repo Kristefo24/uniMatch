@@ -130,12 +130,17 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
   if (Array.isArray(universityIds) && universityIds.length) {
     unis = unis.filter(u => universityIds.includes(u.id));
   }
-  // Department/programme eligibility is a soft ordering preference now, not a
-  // hard filter — every university is still scored (so TOPSIS's vector
-  // normalisation is consistent regardless of which department is picked),
-  // and results always show at least 5 universities: department matches
-  // first, padded with the best-scoring non-matches if fewer than 5 offer
-  // the department at all.
+  // Department/programme eligibility is a hard filter: a university that
+  // doesn't offer the graduate's chosen department is excluded from the
+  // ranked list entirely (it's not a real option), so results can genuinely
+  // be fewer than 5. Every university is still SCORED first (so TOPSIS's
+  // vector normalisation stays consistent regardless of which department is
+  // picked) -- only the final list is filtered down. If that filter ever
+  // comes up empty (a rare edge case: data changed underneath, a stale
+  // saved-ranking replay, or a direct API call bypassing the app's own
+  // eligibility gate), fall back to the best-scoring universities overall
+  // rather than showing a graduate a blank screen, each flagged
+  // `outsideDept: true` so the fallback is never mistaken for a real match.
   let deptEligibleIds = null;
   let exactProgrammeIds = null;
   let deptProgs = null;
@@ -214,12 +219,14 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
     });
   }
   let ranked = topsis(unis, criteria || [])
-    .map(u => ({ id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, cc: Number(u.cc.toFixed(4)), vals: u.vals || {}, combos: u.combos || {} }));
+    .map(u => ({
+      id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, cc: Number(u.cc.toFixed(4)),
+      bestCode: u.bestCode || null, worstCode: u.worstCode || null,
+      vals: u.vals || {}, combos: u.combos || {},
+    }));
   if (deptEligibleIds) {
-    // Department matches always lead (cc-descending), non-matches pad the
-    // tail (never dropped) so the list is never shorter than the full pool.
     const deptMatches = ranked.filter(u => deptEligibleIds.has(u.id));
-    const others = ranked.filter(u => !deptEligibleIds.has(u.id));
+    let filtered;
     // Within deptMatches only: the exact-programme university jumps to #1,
     // but only when it's genuinely competitive (cc within 0.15 of the best
     // in-department alternative) — a big gap means it ranks at its own score
@@ -231,18 +238,19 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
       if (exactInDept.length && others2.length) {
         const bestExact = exactInDept[0]; // deptMatches is still cc-desc at this point
         const bestOther = others2[0];
-        if (bestExact.cc >= bestOther.cc - 0.15) {
-          const rest = deptMatches.filter(u => u.id !== bestExact.id);
-          ranked = [bestExact, ...rest, ...others];
-        } else {
-          ranked = [...deptMatches, ...others];
-        }
+        filtered = bestExact.cc >= bestOther.cc - 0.15
+          ? [bestExact, ...deptMatches.filter(u => u.id !== bestExact.id)]
+          : deptMatches;
       } else {
-        ranked = [...deptMatches, ...others];
+        filtered = deptMatches;
       }
     } else {
-      ranked = [...deptMatches, ...others];
+      filtered = deptMatches;
     }
+    // Rare edge case (see comment above `deptEligibleIds`) -- never show a
+    // graduate a blank result screen; fall back to the best overall,
+    // clearly flagged as outside their chosen department.
+    ranked = filtered.length ? filtered : ranked.map(u => ({ ...u, outsideDept: true }));
   }
   const codes = Array.isArray(criteria) ? criteria.map(c => c.code).filter(Boolean) : [];
   if (codes.length) {
