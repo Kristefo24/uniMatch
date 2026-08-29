@@ -221,7 +221,7 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
   let ranked = topsis(unis, criteria || [])
     .map(u => ({
       id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, cc: Number(u.cc.toFixed(4)),
-      bestCode: u.bestCode || null, worstCode: u.worstCode || null,
+      bestCode: u.bestCode || null, weakCodes: u.weakCodes || [],
       vals: u.vals || {}, combos: u.combos || {},
     }));
   if (deptEligibleIds) {

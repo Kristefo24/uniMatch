@@ -3478,14 +3478,18 @@ class _ResultsScreenState extends State<ResultsScreen> {
   /// weakest contributing criterion, from the same TOPSIS computation that
   /// produced its score. Real, data-driven; renders nothing if the code is
   /// missing (e.g. only one criterion was selected).
-  Widget _reasonPill(IconData icon, String tag, String? label, Color color) {
-    if (label == null) return const SizedBox.shrink();
+  /// [onDark] switches the pill's background to a translucent white scrim
+  /// instead of a tint of [color] -- a light tint of an already-light accent
+  /// (gold, pale mint) barely shows up against the solid green top-match
+  /// card, so the top card needs a different treatment to stay visible.
+  Widget _reasonPill(IconData icon, String tag, List<String> labels, Color color, {bool onDark = false}) {
+    if (labels.isEmpty) return const SizedBox.shrink();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.07),
+        color: onDark ? Colors.white.withValues(alpha: 0.12) : color.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        border: Border.all(color: onDark ? color.withValues(alpha: 0.5) : color.withValues(alpha: 0.3)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
         Row(children: [
@@ -3494,8 +3498,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
           Text(tag, style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, color: color, letterSpacing: 0.3)),
         ]),
         const SizedBox(height: 3),
-        Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color),
-            maxLines: 1, overflow: TextOverflow.ellipsis),
+        Text(labels.join(', '), style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+            maxLines: 2, overflow: TextOverflow.ellipsis),
       ]),
     );
   }
@@ -3549,7 +3553,10 @@ class _ResultsScreenState extends State<ResultsScreen> {
                         final badge = i == 0 ? 'TOP MATCH' : i == 1 ? '2ND' : i == 2 ? '3RD' : null;
                         final outsideDept = u['outsideDept'] == true;
                         final strongestLabel = labelByCode[u['bestCode']];
-                        final weakestLabel = labelByCode[u['worstCode']];
+                        final weakLabels = ((u['weakCodes'] as List?) ?? const [])
+                            .map((c) => labelByCode[c])
+                            .whereType<String>()
+                            .toList();
                         return GestureDetector(
                           onTap: () => Navigator.push(context,
                               MaterialPageRoute(builder: (_) => DetailScreen(id: u['id'], name: u['name']))),
@@ -3616,13 +3623,16 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                     if (accommodation != null) _chip(accommodation == true ? 'On-campus' : 'Off-campus', Icons.home_outlined),
                                   ]),
                                 ),
-                              if (strongestLabel != null || weakestLabel != null)
+                              if (strongestLabel != null || weakLabels.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.fromLTRB(13, 0, 13, 10),
-                                  child: Row(children: [
-                                    Expanded(child: _reasonPill(Icons.trending_up, 'STRONGEST', strongestLabel, C.green)),
+                                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                    Expanded(child: _reasonPill(Icons.trending_up, 'STRONGEST',
+                                        strongestLabel != null ? [strongestLabel] : const [],
+                                        top1 ? C.gold : C.green, onDark: top1)),
                                     const SizedBox(width: 8),
-                                    Expanded(child: _reasonPill(Icons.trending_down, 'NEEDS WORK', weakestLabel, const Color(0xFFB4472A))),
+                                    Expanded(child: _reasonPill(Icons.trending_down, 'WEAK', weakLabels,
+                                        top1 ? const Color(0xFFCDE3DA) : const Color(0xFFB4472A), onDark: top1)),
                                   ]),
                                 ),
                               Padding(
@@ -3727,7 +3737,10 @@ class _DetailScreenState extends State<DetailScreen> {
     }).catchError((_) {});
     Api.programmes(null).then((list) {
       allProgrammes = list;
-      final n = list.where((p) => (p as Map)['universityId'] == widget.id).length;
+      // Distinct programme names, not raw rows -- see the same fix on the
+      // staff dashboard for why a raw count can read higher than reality.
+      final n = list.where((p) => (p as Map)['universityId'] == widget.id)
+          .map((p) => '${(p as Map)['name']}').toSet().length;
       if (mounted) setState(() => programmeCount = n);
     }).catchError((_) {});
   }
@@ -3810,7 +3823,7 @@ class _DetailScreenState extends State<DetailScreen> {
             byCategory.putIfAbsent(cat, () { categories.add(cat); return []; }).add(c);
           }
 
-          // Contextual staff answers that aren't one of the 26 criterion codes
+          // Contextual staff answers that aren't one of the criterion codes
           // (partner schools, bus stops, cohorts, etc.) — shown separately.
           final contextualRows = <MapEntry<String, dynamic>>[];
           final seen = <String>{};
@@ -4202,6 +4215,7 @@ class _StaffDashboardState extends State<StaffDashboard> {
   String uniName = '';
   int campusCount = 0;
   int programmeCount = 0;
+  int criteriaCount = 0;
 
   @override
   void initState() {
@@ -4219,8 +4233,16 @@ class _StaffDashboardState extends State<StaffDashboard> {
         if (mounted) setState(() => campusCount = ((d['campuses'] as List?) ?? const []).length);
       }).catchError((_) {});
       Api.programmes(null).then((list) {
-        final n = list.where((p) => (p as Map)['universityId'] == uniId).length;
+        // Distinct programme names, not raw rows -- Api.programmes(null)
+        // includes a synthetic placeholder per department with no real
+        // named programme yet, so a raw count can read higher than what
+        // Combinations/edit-campus (which count distinct names) show.
+        final n = list.where((p) => (p as Map)['universityId'] == uniId)
+            .map((p) => '${(p as Map)['name']}').toSet().length;
         if (mounted) setState(() => programmeCount = n);
+      }).catchError((_) {});
+      Api.criteria().then((list) {
+        if (mounted) setState(() => criteriaCount = list.length);
       }).catchError((_) {});
     }
   }
@@ -4277,9 +4299,9 @@ class _StaffDashboardState extends State<StaffDashboard> {
                 _card(context, 'Campuses & programmes', 'Add campuses, departments and programmes',
                     Icons.apartment, const StaffCampusesScreen(), onReturn: _load),
                 _card(context, 'Eligible combinations', 'Principal-pass combos per programme',
-                    Icons.rule, const StaffCombosScreen()),
-                _card(context, 'Criteria answers', 'Fill in your 26 data points',
-                    Icons.fact_check_outlined, const StaffCriteriaScreen()),
+                    Icons.rule, const StaffCombosScreen(), onReturn: _load),
+                _card(context, 'Criteria answers', 'Fill in your $criteriaCount data points',
+                    Icons.fact_check_outlined, const StaffCriteriaScreen(), onReturn: _load),
                 _card(context, 'Reports', 'Reach, applicants & locations · CSV',
                     Icons.bar_chart, const StaffReportsScreen()),
               ],
