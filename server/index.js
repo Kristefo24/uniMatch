@@ -357,6 +357,14 @@ app.put('/staff/:uniId/criteria', auth(), requireStaffOfUniversity(), wrap(async
 app.put('/staff/:uniId/programmes', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.saveStaffProgrammes(req.params.uniId, (req.body && req.body.programmes) || []));
 }));
+// Renames a programme by name everywhere it's referenced -- the programmes
+// table/blob AND its combos entry -- so a rename from the Combinations
+// screen can never re-orphan itself the way a plain combos-key edit would.
+app.put('/staff/:uniId/programmes/rename', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
+  const { oldName, newName } = req.body || {};
+  if (!oldName || !newName) throw new Error('oldName and newName are required');
+  res.json(await db.renameStaffProgramme(req.params.uniId, oldName, newName));
+}));
 app.get('/staff/:uniId/report', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.staffReport(req.params.uniId));
 }));

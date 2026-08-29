@@ -243,6 +243,29 @@ module.exports = {
     save();
     return db.staffData[uniId];
   },
+  // Renames a programme by name wherever it's referenced -- its row(s) in
+  // the flat programmes table/blob, AND its combos entry -- so the two can
+  // never drift apart the way a plain combos-key edit would (which would
+  // just re-orphan the entry the moment it no longer matches the real name).
+  // Works equally for a genuinely orphaned combos-only entry (no matching
+  // programme row exists) -- the combos key still moves, nothing else to do.
+  async renameStaffProgramme(uniId, oldName, newName) {
+    db.staffData = db.staffData || {};
+    const d = db.staffData[uniId] || { campuses: [], combos: {}, criteria: {}, programmes: [] };
+    if (oldName !== newName && d.combos && d.combos[oldName] !== undefined && d.combos[newName] !== undefined) {
+      throw new Error(`"${newName}" already has its own combinations set — rename or delete one first`);
+    }
+    const programmes = (d.programmes || []).map(p => p.name === oldName ? { ...p, name: newName } : p);
+    const combos = { ...(d.combos || {}) };
+    if (oldName !== newName && combos[oldName] !== undefined) {
+      combos[newName] = combos[oldName];
+      delete combos[oldName];
+    }
+    db.staffData[uniId] = { ...d, programmes, combos };
+    db.programmes = db.programmes.map(p => (p.universityId === uniId && p.name === oldName) ? { ...p, name: newName } : p);
+    save();
+    return db.staffData[uniId];
+  },
   async saveStaffCriteria(uniId, criteria) {
     db.staffData = db.staffData || {};
     db.staffData[uniId] = { ...(db.staffData[uniId] || { campuses:[], combos:{} }), criteria };

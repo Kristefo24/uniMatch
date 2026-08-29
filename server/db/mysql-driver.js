@@ -510,6 +510,29 @@ module.exports = {
     }
     return d;
   },
+  // Renames a programme by name wherever it's referenced -- its row(s) in
+  // the flat programmes table/blob, AND its combos entry -- so the two can
+  // never drift apart the way a plain combos-key edit would (which would
+  // just re-orphan the entry the moment it no longer matches the real name).
+  // Works equally for a genuinely orphaned combos-only entry (no matching
+  // programme row exists) -- the combos key still moves, nothing else to do.
+  async renameStaffProgramme(uniId, oldName, newName) {
+    const p = await getPool();
+    const d = await this._staffData(uniId);
+    if (oldName !== newName && d.combos && d.combos[oldName] !== undefined && d.combos[newName] !== undefined) {
+      throw new Error(`"${newName}" already has its own combinations set — rename or delete one first`);
+    }
+    d.programmes = (d.programmes || []).map(pr => pr.name === oldName ? { ...pr, name: newName } : pr);
+    const combos = { ...(d.combos || {}) };
+    if (oldName !== newName && combos[oldName] !== undefined) {
+      combos[newName] = combos[oldName];
+      delete combos[oldName];
+    }
+    d.combos = combos;
+    await this._saveStaffData(uniId, d);
+    await p.query('UPDATE programmes SET name=? WHERE university_id=? AND name=?', [newName, uniId, oldName]);
+    return d;
+  },
   async saveStaffCriteria(uniId, criteria) {
     const p = await getPool();
     const d = await this._staffData(uniId); d.criteria = criteria;

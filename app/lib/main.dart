@@ -384,6 +384,11 @@ class Api {
       _put('/staff/$uniId/combos', {'combos': combos});
   static Future<void> saveStaffProgrammes(String uniId, List programmes) =>
       _put('/staff/$uniId/programmes', {'programmes': programmes});
+  /// Renames a programme everywhere it's referenced (its programme row(s)
+  /// AND its combinations entry), so it can never re-orphan itself the way
+  /// a plain combos-key edit would.
+  static Future<void> renameStaffProgramme(String uniId, String oldName, String newName) =>
+      _put('/staff/$uniId/programmes/rename', {'oldName': oldName, 'newName': newName});
   static Future<void> saveStaffCriteria(String uniId, Map criteria) =>
       _put('/staff/$uniId/criteria', {'criteria': criteria});
   static Future<Map<String, dynamic>> staffReport(String uniId) async =>
@@ -4661,6 +4666,13 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   List<String> _catalogueSubjects(String code) =>
       List<String>.from(_catalogue.firstWhere((c) => c['code'] == code, orElse: () => {'subjects': const []})['subjects'] ?? const []);
 
+  /// Every entry to show on this screen -- current real programmes AND any
+  /// saved combos entry that no longer matches one (a rename, or a
+  /// programme removed on Campuses) -- shown together as one list rather
+  /// than split into a separate section, since staff can now rename an
+  /// entry right here instead of needing it to already be a "real" programme.
+  List<String> get _allEntries => {...programmes, ...combos.keys}.toList()..sort();
+
   @override
   void initState() {
     super.initState();
@@ -4753,12 +4765,12 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   /// removed on Campuses) -- these can never be reached from the accordion
   /// above since it only lists current programmes, so this is the only way
   /// to clear one out.
-  Future<void> _deleteOrphanedEntry(String name) async {
+  Future<void> _deleteEntry(String name) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete this entry?'),
-        content: Text('"$name" no longer matches a current programme. Its saved combinations will be permanently removed.'),
+        content: Text('"$name"\'s saved combinations will be permanently removed.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           TextButton(onPressed: () => Navigator.pop(ctx, true),
@@ -4767,8 +4779,40 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
       ),
     );
     if (ok != true) return;
-    setState(() => combos.remove(name));
+    setState(() {
+      combos.remove(name);
+      if (expandedProgramme == name) expandedProgramme = null;
+    });
     _save();
+  }
+
+  /// Renames a programme everywhere it's referenced (server-side: its
+  /// programme row(s) AND its combos entry move together), so it can never
+  /// re-orphan itself the way a plain local combos-key edit would.
+  Future<void> _renameEntry(String oldName) async {
+    final controller = TextEditingController(text: oldName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Rename programme'),
+        content: TextField(controller: controller, autofocus: true, decoration: fieldDeco('Programme name')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (newName == null || newName.isEmpty || newName == oldName) return;
+    try {
+      await Api.renameStaffProgramme(_staffUni, oldName, newName);
+      setState(() {
+        if (expandedProgramme == oldName) expandedProgramme = newName;
+      });
+      await _load();
+      if (mounted) toast(context, 'Renamed to "$newName"');
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    }
   }
 
   @override
@@ -4778,7 +4822,7 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
       appBar: staffAppBar(context, 'Combinations', back: true),
       body: loading
           ? const Center(child: CircularProgressIndicator(color: C.green))
-          : programmes.isEmpty
+          : _allEntries.isEmpty
               ? _emptyView('Add campuses with departments first — their programmes appear here.')
               : ListView(
                   padding: const EdgeInsets.all(20),
@@ -4789,7 +4833,7 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                         'together are accepted as principal passes.',
                         style: TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
                     const SizedBox(height: 14),
-                    ...programmes.map((p) {
+                    ..._allEntries.map((p) {
                       final set = combos[p]!.entries.where((e) => subjectPairs(e.value).isNotEmpty).length;
                       final isOpen = expandedProgramme == p;
                       return Container(
@@ -4804,7 +4848,16 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                               Expanded(child: Text(p, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink))),
                               Text('$set combination${set == 1 ? '' : 's'} set',
                                   style: const TextStyle(fontSize: 11, color: C.muted)),
-                              const SizedBox(width: 6),
+                              IconButton(
+                                icon: const Icon(Icons.edit_outlined, size: 18, color: C.muted),
+                                tooltip: 'Rename',
+                                onPressed: () => _renameEntry(p),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                                tooltip: 'Delete',
+                                onPressed: () => _deleteEntry(p),
+                              ),
                               Icon(isOpen ? Icons.expand_less : Icons.expand_more, color: C.muted),
                             ]),
                           ),
@@ -4883,36 +4936,6 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                         ]),
                       );
                     }),
-                    if (combos.keys.any((k) => !programmes.contains(k))) ...[
-                      const SizedBox(height: 8),
-                      const Text('OTHER SAVED ENTRIES',
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: C.muted, letterSpacing: 0.4)),
-                      const SizedBox(height: 4),
-                      const Text("These don't match any current programme name (e.g. a rename, or a programme "
-                          "removed on Campuses) — delete the ones you don't need.",
-                          style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.4)),
-                      const SizedBox(height: 10),
-                      ...combos.keys.where((k) => !programmes.contains(k)).map((name) {
-                        final set = combos[name]!.entries.where((e) => subjectPairs(e.value).isNotEmpty).length;
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                          decoration: BoxDecoration(
-                              color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
-                          child: Row(children: [
-                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Text(name, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-                              const SizedBox(height: 2),
-                              Text('$set combination${set == 1 ? '' : 's'} set', style: const TextStyle(fontSize: 11, color: C.muted)),
-                            ])),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline, color: Colors.red),
-                              onPressed: () => _deleteOrphanedEntry(name),
-                            ),
-                          ]),
-                        );
-                      }),
-                    ],
                   ],
                 ),
     );
