@@ -4780,7 +4780,15 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
     );
     if (ok != true) return;
     setState(() {
-      combos.remove(name);
+      if (programmes.contains(name)) {
+        // Still a current real programme -- it must keep SOME entry (even
+        // empty) since _allEntries includes it via `programmes`, not just
+        // `combos.keys`; fully removing the key here would leave nothing
+        // for the build below to read and crash the screen.
+        combos[name] = <String, List<String>>{};
+      } else {
+        combos.remove(name);
+      }
       if (expandedProgramme == name) expandedProgramme = null;
     });
     _save();
@@ -4834,6 +4842,11 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                         style: TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
                     const SizedBox(height: 14),
                     ..._allEntries.map((p) {
+                      // Defensive: every entry shown here must have a backing
+                      // map, whatever path led to it appearing in
+                      // _allEntries -- guarantees the `!`s below can never
+                      // null-check-crash the whole screen.
+                      combos.putIfAbsent(p, () => <String, List<String>>{});
                       final set = combos[p]!.entries.where((e) => subjectPairs(e.value).isNotEmpty).length;
                       final isOpen = expandedProgramme == p;
                       return Container(
