@@ -266,6 +266,22 @@ module.exports = {
     save();
     return db.staffData[uniId];
   },
+  // Removes a programme by name everywhere it's referenced -- its row(s) in
+  // the flat programmes table/blob, AND its combos entry -- not just its
+  // combinations. Handles a purely orphaned combos-only entry the same way:
+  // no programme row matches, so that part is a no-op, only the combos key
+  // is dropped.
+  async deleteStaffProgramme(uniId, name) {
+    db.staffData = db.staffData || {};
+    const d = db.staffData[uniId] || { campuses: [], combos: {}, criteria: {}, programmes: [] };
+    const programmes = (d.programmes || []).filter(p => p.name !== name);
+    const combos = { ...(d.combos || {}) };
+    delete combos[name];
+    db.staffData[uniId] = { ...d, programmes, combos };
+    db.programmes = db.programmes.filter(p => !(p.universityId === uniId && p.name === name));
+    save();
+    return db.staffData[uniId];
+  },
   async saveStaffCriteria(uniId, criteria) {
     db.staffData = db.staffData || {};
     db.staffData[uniId] = { ...(db.staffData[uniId] || { campuses:[], combos:{} }), criteria };

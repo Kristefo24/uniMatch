@@ -365,6 +365,11 @@ app.put('/staff/:uniId/programmes/rename', auth(), requireStaffOfUniversity(), w
   if (!oldName || !newName) throw new Error('oldName and newName are required');
   res.json(await db.renameStaffProgramme(req.params.uniId, oldName, newName));
 }));
+// Removes a programme by name everywhere it's referenced -- the programmes
+// table/blob AND its combos entry -- not just its combinations.
+app.delete('/staff/:uniId/programmes/:name', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
+  res.json(await db.deleteStaffProgramme(req.params.uniId, req.params.name));
+}));
 app.get('/staff/:uniId/report', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.staffReport(req.params.uniId));
 }));

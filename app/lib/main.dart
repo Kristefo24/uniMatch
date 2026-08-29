@@ -389,6 +389,11 @@ class Api {
   /// a plain combos-key edit would.
   static Future<void> renameStaffProgramme(String uniId, String oldName, String newName) =>
       _put('/staff/$uniId/programmes/rename', {'oldName': oldName, 'newName': newName});
+  /// Removes a programme by name everywhere it's referenced -- not just its
+  /// combinations -- so it disappears from Campuses and every graduate-
+  /// facing screen too.
+  static Future<void> deleteStaffProgramme(String uniId, String name) =>
+      _delete('/staff/$uniId/programmes/${Uri.encodeComponent(name)}');
   static Future<void> saveStaffCriteria(String uniId, Map criteria) =>
       _put('/staff/$uniId/criteria', {'criteria': criteria});
   static Future<Map<String, dynamic>> staffReport(String uniId) async =>
@@ -4765,12 +4770,19 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   /// removed on Campuses) -- these can never be reached from the accordion
   /// above since it only lists current programmes, so this is the only way
   /// to clear one out.
+  /// Deletes the programme itself -- not just its saved combinations -- so
+  /// it disappears everywhere, including Campuses and every graduate-facing
+  /// screen. Works the same for an already-orphaned combos-only entry (no
+  /// matching programme row to remove, so just its combos entry goes).
   Future<void> _deleteEntry(String name) async {
+    final isReal = programmes.contains(name);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete this entry?'),
-        content: Text('"$name"\'s saved combinations will be permanently removed.'),
+        title: const Text('Delete this programme?'),
+        content: Text(isReal
+            ? '"$name" will be permanently removed everywhere, including Campuses, along with its saved combinations.'
+            : '"$name"\'s saved combinations will be permanently removed.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           TextButton(onPressed: () => Navigator.pop(ctx, true),
@@ -4779,19 +4791,14 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
       ),
     );
     if (ok != true) return;
-    setState(() {
-      if (programmes.contains(name)) {
-        // Still a current real programme -- it must keep SOME entry (even
-        // empty) since _allEntries includes it via `programmes`, not just
-        // `combos.keys`; fully removing the key here would leave nothing
-        // for the build below to read and crash the screen.
-        combos[name] = <String, List<String>>{};
-      } else {
-        combos.remove(name);
-      }
-      if (expandedProgramme == name) expandedProgramme = null;
-    });
-    _save();
+    try {
+      await Api.deleteStaffProgramme(_staffUni, name);
+      if (expandedProgramme == name) setState(() => expandedProgramme = null);
+      await _load();
+      if (mounted) toast(context, 'Deleted "$name"');
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    }
   }
 
   /// Renames a programme everywhere it's referenced (server-side: its

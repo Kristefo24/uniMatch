@@ -484,6 +484,21 @@ module.exports = {
     await q('UPDATE programmes SET name=$1 WHERE university_id=$2 AND name=$3', [newName, uniId, oldName]);
     return d;
   },
+  // Removes a programme by name everywhere it's referenced -- its row(s) in
+  // the flat programmes table/blob, AND its combos entry -- not just its
+  // combinations. Handles a purely orphaned combos-only entry the same way:
+  // no programme row matches, so that part is a no-op, only the combos key
+  // is dropped.
+  async deleteStaffProgramme(uniId, name) {
+    const d = await this._staffData(uniId);
+    d.programmes = (d.programmes || []).filter(pr => pr.name !== name);
+    const combos = { ...(d.combos || {}) };
+    delete combos[name];
+    d.combos = combos;
+    await this._saveStaffData(uniId, d);
+    await q('DELETE FROM programmes WHERE university_id=$1 AND name=$2', [uniId, name]);
+    return d;
+  },
   async saveStaffCriteria(uniId, criteria) {
     const d = await this._staffData(uniId); d.criteria = criteria;
     await this._saveStaffData(uniId, d);
