@@ -91,6 +91,23 @@ async function migratePlainTextPasswords() {
   }
 }
 
+// Defense-in-depth against a programme getting saved twice under the exact
+// same name/department/campus (e.g. a client-side re-entry mistake) --
+// collapses exact duplicates within one save's payload before it's ever
+// persisted, regardless of what caused them. Case-insensitive on name,
+// keeps the first occurrence.
+function dedupeProgrammes(programmes) {
+  const seen = new Set();
+  const out = [];
+  for (const p of programmes) {
+    const key = `${(p.name || '').trim().toLowerCase()}::${p.dept}::${p.campus || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
 // A department with no explicitly-named programme yet shows a synthetic
 // placeholder named after the department itself (see listProgrammes) --
 // if staff configure eligible combinations while that's showing, they're
@@ -481,6 +498,7 @@ module.exports = {
   },
   async saveStaffProgrammes(uniId, programmes) {
     const p = await getPool();
+    programmes = dedupeProgrammes(programmes);
     const d = await this._staffData(uniId);
     d.combos = carryForwardOrphanedCombos(d.programmes, programmes, d.combos);
     d.programmes = programmes;

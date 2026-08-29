@@ -4748,6 +4748,29 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
     _save();
   }
 
+  /// Remove a saved entry that no longer matches any current programme name
+  /// (e.g. left over from a rename, or a programme that's since been
+  /// removed on Campuses) -- these can never be reached from the accordion
+  /// above since it only lists current programmes, so this is the only way
+  /// to clear one out.
+  Future<void> _deleteOrphanedEntry(String name) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this entry?'),
+        content: Text('"$name" no longer matches a current programme. Its saved combinations will be permanently removed.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => combos.remove(name));
+    _save();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -4860,6 +4883,36 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
                         ]),
                       );
                     }),
+                    if (combos.keys.any((k) => !programmes.contains(k))) ...[
+                      const SizedBox(height: 8),
+                      const Text('OTHER SAVED ENTRIES',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: C.muted, letterSpacing: 0.4)),
+                      const SizedBox(height: 4),
+                      const Text("These don't match any current programme name (e.g. a rename, or a programme "
+                          "removed on Campuses) — delete the ones you don't need.",
+                          style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.4)),
+                      const SizedBox(height: 10),
+                      ...combos.keys.where((k) => !programmes.contains(k)).map((name) {
+                        final set = combos[name]!.entries.where((e) => subjectPairs(e.value).isNotEmpty).length;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                              color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
+                          child: Row(children: [
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(name, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                              const SizedBox(height: 2),
+                              Text('$set combination${set == 1 ? '' : 's'} set', style: const TextStyle(fontSize: 11, color: C.muted)),
+                            ])),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red),
+                              onPressed: () => _deleteOrphanedEntry(name),
+                            ),
+                          ]),
+                        );
+                      }),
+                    ],
                   ],
                 ),
     );
