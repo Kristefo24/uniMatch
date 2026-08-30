@@ -1438,6 +1438,14 @@ class _SignupScreenState extends State<SignupScreen> {
               TextField(controller: pass, obscureText: true, decoration: fieldDeco('8+ characters')),
               const SizedBox(height: 24),
               primaryButton('Continue', _signup, loading: loading),
+              const SizedBox(height: 12),
+              Center(
+                child: TextButton(
+                  onPressed: () => Navigator.pushReplacement(
+                      context, MaterialPageRoute(builder: (_) => const LoginScreen())),
+                  child: const Text('Already have an account? Log in', style: TextStyle(color: C.green)),
+                ),
+              ),
             ],
           ),
         ),
@@ -1511,17 +1519,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
               ),
               const SizedBox(height: 24),
               primaryButton('Verify & continue', () {
-                // Demo: backend verify is token-based; continue to student home.
-                final user = widget.user;
-                Session.role = 'student';
-                if (user != null) {
-                  Session.name = user['name'] ?? '';
-                  Session.email = user['email'] ?? '';
-                  Session.track = user['track'];
-                  Session.photo = user['photo'];
-                  _bumpAvatar();
-                }
-                _routeByRole(context, 'student');
+                // Registering doesn't sign the graduate in -- they land back
+                // on login and authenticate for real, like any other account.
+                Navigator.pushAndRemoveUntil(
+                    context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
               }),
               const SizedBox(height: 12),
               Center(
@@ -1575,7 +1576,11 @@ class _StudentHomeState extends State<StudentHome> {
   }
 
   String get greeting => 'Welcome,';
-  String get firstName => Session.first.isEmpty ? 'Amara' : Session.first;
+  String get firstName {
+    final f = Session.first;
+    if (f.isEmpty) return 'Amara';
+    return f[0].toUpperCase() + f.substring(1).toLowerCase();
+  }
   String get initials {
     if (Session.name.isEmpty) return 'AM';
     final parts = Session.name.trim().split(' ');
