@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show TextInputFormatter, TextEditingValue;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -125,14 +126,34 @@ Widget eligibilityCard(Map<String, List<String>> byCode, {String? title}) {
             child: Text(e.key, style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w700)),
           ),
           const SizedBox(height: 6),
-          ...pairs.map((pair) => Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: Text(pair, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600)),
-              )),
+          ...pairs.map((pair) {
+            final subs = pair.split(' + ');
+            return Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Wrap(spacing: 4, runSpacing: 2, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                for (var i = 0; i < subs.length; i++) ...[
+                  if (i > 0) const Text('+', style: TextStyle(fontSize: 10, color: C.muted, fontWeight: FontWeight.w700)),
+                  _subjectChip(subs[i]),
+                ],
+              ]),
+            );
+          }),
         ]),
       );
     }).toList()),
   ]);
+}
+
+/// A single subject within a qualifying pair, colored the same way as a
+/// combination code (same hash-based palette, just keyed by subject name)
+/// so subjects are as visually distinguishable from each other as codes are.
+Widget _subjectChip(String subject) {
+  final c = comboColor(subject);
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(color: c.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
+    child: Text(subject, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: c)),
+  );
 }
 
 
@@ -847,7 +868,8 @@ InputDecoration fieldDeco(String hint, {IconData? icon}) => InputDecoration(
     );
 
 void toast(BuildContext ctx, String msg) =>
-    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(msg), backgroundColor: C.greenDark));
+    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+        content: Text(msg), backgroundColor: C.greenDark, duration: const Duration(seconds: 2)));
 
 /// ---- Onboarding ------------------------------------------------------------
 class OnboardingScreen extends StatelessWidget {
@@ -2678,6 +2700,53 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
     }).catchError((_) {});
   }
 
+  /// Same rule as `DepartmentScreen._hasMatchingOffering`, one level deeper:
+  /// passing the department gate only means *some* programme in it matches
+  /// the student's combination -- this checks whether THIS specific
+  /// programme does, at any university offering it, before letting them
+  /// select it.
+  bool _programmeHasMatchingOffering(List<Map> offerings) {
+    final track = Session.track;
+    if (track == null) return false;
+    for (final o in offerings) {
+      final raw = (uniById['${o['universityId']}']?['combos'] as Map?)?['${o['name']}'];
+      if (raw is! Map) continue;
+      final matched = raw.keys.any((k) =>
+          '$k' == track && subjectPairs(List<String>.from(raw[k] as List)).isNotEmpty);
+      if (matched) return true;
+    }
+    return false;
+  }
+
+  Future<void> _showProgrammeNotEligibleDialog(String programmeName, List<Map> offerings) {
+    final track = Session.track;
+    final accepted = <String>{};
+    for (final o in offerings) {
+      final raw = (uniById['${o['universityId']}']?['combos'] as Map?)?['${o['name']}'];
+      if (raw is Map) {
+        raw.forEach((k, v) {
+          if (subjectPairs(List<String>.from(v as List)).isNotEmpty) accepted.add('$k');
+        });
+      }
+    }
+    final String msg;
+    if (track == null) {
+      msg = 'Add your A2 combination to your profile first so we can check whether you\'re eligible for $programmeName.';
+    } else if (accepted.isEmpty) {
+      msg = 'Your $track combination is not eligible for $programmeName — no university has set up combination requirements for it yet.';
+    } else {
+      msg = 'Your $track combination is not eligible for $programmeName. Accepted combinations: ${accepted.join(', ')}.';
+    }
+    return showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Not eligible for this programme'),
+        content: Text(msg),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
+  }
+
   /// The subjects the university's own staff marked acceptable for this
   /// programme, keyed by A2 combination code — no fabricated eligibility
   /// hints. Any 2 of the listed subjects together qualify (e.g. Maths,
@@ -2698,9 +2767,12 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
       });
       if (byCode.isEmpty) continue;
       final track = Session.track;
-      out[uniId] = (track != null && byCode.containsKey(track))
-          ? [MapEntry(track, byCode[track]!)]
-          : byCode.entries.toList();
+      if (track == null) {
+        out[uniId] = byCode.entries.toList(); // no combination on file -- nothing to narrow to
+      } else if (byCode.containsKey(track)) {
+        out[uniId] = [MapEntry(track, byCode[track]!)];
+      }
+      // else: track is set but this university hasn't configured it -- show nothing for it.
     }
     return out;
   }
@@ -2766,12 +2838,21 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                           final offerings = byName[name]!;
                           final unis = offerings.map((p) => uniNames[p['universityId']] ?? '').where((s) => s.isNotEmpty).toSet().join(', ');
                           final sel = selectedProgramme == name;
+                          final eligible = _programmeHasMatchingOffering(offerings);
                           final eligibility = sel
                               ? _eligibilityByUni(name, offerings)
                               : const <String, List<MapEntry<String, List<String>>>>{};
                           return GestureDetector(
-                            onTap: () => setState(() => selectedProgramme = name),
-                            child: Container(
+                            onTap: () {
+                              if (!eligible) {
+                                _showProgrammeNotEligibleDialog(name, offerings);
+                                return;
+                              }
+                              setState(() => selectedProgramme = name);
+                            },
+                            child: Opacity(
+                              opacity: eligible ? 1 : 0.55,
+                              child: Container(
                               margin: const EdgeInsets.only(bottom: 10),
                               padding: const EdgeInsets.all(16),
                               decoration: BoxDecoration(
@@ -2790,7 +2871,10 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                     Text(name, style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 14.5)),
                                     const SizedBox(height: 2),
-                                    Text(unis.isNotEmpty ? 'Offered at: $unis' : 'Offered at: —',
+                                    Text(
+                                        eligible
+                                            ? (unis.isNotEmpty ? 'Offered at: $unis' : 'Offered at: —')
+                                            : 'Not open for your combination',
                                         style: const TextStyle(color: C.muted, fontSize: 11.5)),
                                   ])),
                                   if (sel)
@@ -2816,6 +2900,7 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                                   }),
                                 ],
                               ]),
+                              ),
                             ),
                           );
                         },
@@ -3018,6 +3103,22 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                       const SizedBox(width: 10),
                                       Expanded(child: Text(cat.toUpperCase(), style: TextStyle(
                                           fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor))),
+                                      if (isOpen)
+                                        GestureDetector(
+                                          onTap: () => setState(() {
+                                            final codes = items.map((c) => c['code'] as String);
+                                            if (selCount == items.length) {
+                                              selected.removeAll(codes);
+                                            } else {
+                                              selected.addAll(codes);
+                                            }
+                                          }),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                            child: Text(selCount == items.length ? 'Deselect all' : 'Select all',
+                                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: catColor)),
+                                          ),
+                                        ),
                                       Text('$selCount/${items.length}', style: const TextStyle(
                                           fontFamily: 'monospace', fontSize: 10, color: C.muted)),
                                     ]),
@@ -3071,8 +3172,8 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                       ),
                                     ]);
                                   } else {
-                                    final lo = (Session.budgetMin ?? 500000).clamp(500000, 20000000).toDouble();
-                                    final hi = (Session.budgetMax ?? 20000000).clamp(500000, 20000000).toDouble();
+                                    final lo = (Session.budgetMin ?? 500000).clamp(500000, 10000000).toDouble();
+                                    final hi = (Session.budgetMax ?? 10000000).clamp(500000, 10000000).toDouble();
                                     panelBody = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                       const Text('YOUR BUDGET RANGE (RWF / YEAR)', style: TextStyle(
                                           fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
@@ -3081,7 +3182,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                           style: const TextStyle(color: C.ink, fontWeight: FontWeight.w700, fontSize: 13)),
                                       RangeSlider(
                                         values: RangeValues(lo, hi),
-                                        min: 500000, max: 20000000, divisions: 39,
+                                        min: 500000, max: 10000000, divisions: 95,
                                         activeColor: C.green, inactiveColor: C.sand,
                                         labels: RangeLabels(_fmtRwf(lo), _fmtRwf(hi)),
                                         onChanged: (v) => setState(() {
@@ -3124,6 +3225,16 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
                 ),
                 child: const Text('Reset'),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton(
+                onPressed: () => setState(() => selected.addAll(visible.map((c) => c['code'] as String))),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: C.green, side: const BorderSide(color: C.green),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                ),
+                child: const Text('Select all'),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -3262,127 +3373,121 @@ class _LocationScreenState extends State<LocationScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Padding(
-            padding: EdgeInsets.fromLTRB(20, 4, 20, 2),
+            padding: EdgeInsets.fromLTRB(20, 4, 20, 4),
             child: Text('STEP 4 / 4 · LOCATION',
                 style: TextStyle(fontFamily: 'monospace', fontSize: 11, color: C.muted, letterSpacing: 0.5)),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 2, 20, 8),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Where do you\nlive?', style: head(24)),
-              const SizedBox(height: 4),
-              const Text('Search your address, or tap the map to drop a pin.', style: TextStyle(color: C.muted, fontSize: 12)),
-            ]),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: TextField(
-              controller: addr,
-              onChanged: _onSearchChanged,
-              decoration: InputDecoration(
-                hintText: 'Search sector or address…',
-                prefixIcon: const Icon(Icons.search, color: C.muted),
-                filled: true, fillColor: Colors.white,
-                enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(999), borderSide: const BorderSide(color: C.border)),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(999), borderSide: const BorderSide(color: C.green)),
-              ),
-            ),
-          ),
-          if (results.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              child: Container(
-                decoration: BoxDecoration(
-                    color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                child: Column(children: results.map((r) => ListTile(
-                  leading: Container(
-                    width: 30, height: 30,
-                    decoration: const BoxDecoration(color: Color(0xFFC7EBD8), shape: BoxShape.circle),
-                    child: const Icon(Icons.place, color: C.green, size: 16),
-                  ),
-                  title: Text('${r['display_name'] ?? ''}',
-                      maxLines: 2, overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
-                  onTap: () => _selectResult(r),
-                )).toList()),
-              ),
-            ),
+          // The map now owns nearly the whole screen -- search and "use
+          // current location" float over it instead of sharing fixed-height
+          // rows in this Column, matching a real mapping app's feel and
+          // giving far more room to actually see and tap the location.
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: Container(
-                  decoration: BoxDecoration(border: Border.all(color: C.border), borderRadius: BorderRadius.circular(20)),
-                  child: Stack(children: [
-                    FlutterMap(
-                      mapController: _mapController,
-                      options: MapOptions(
-                        initialCenter: _gasabo,
-                        initialZoom: 13,
-                        onTap: (_, point) => _reverseGeocode(point),
+            child: Stack(children: [
+              FlutterMap(
+                mapController: _mapController,
+                options: MapOptions(
+                  initialCenter: _gasabo,
+                  initialZoom: 13,
+                  onTap: (_, point) => _reverseGeocode(point),
+                ),
+                children: [
+                  TileLayer(
+                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName: 'com.unimatch.gasabo',
+                  ),
+                  if (pin != null)
+                    MarkerLayer(markers: [
+                      Marker(
+                        point: pin!,
+                        width: 36, height: 36,
+                        child: const Icon(Icons.location_on, color: Color(0xFFC25A1F), size: 36),
                       ),
-                      children: [
-                        TileLayer(
-                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName: 'com.unimatch.gasabo',
-                        ),
-                        if (pin != null)
-                          MarkerLayer(markers: [
-                            Marker(
-                              point: pin!,
-                              width: 36, height: 36,
-                              child: const Icon(Icons.location_on, color: Color(0xFFC25A1F), size: 36),
-                            ),
-                          ]),
-                      ],
+                    ]),
+                ],
+              ),
+              Positioned(
+                top: 12, left: 12, right: 12,
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Material(
+                    color: Colors.white,
+                    shape: const CircleBorder(),
+                    elevation: 3,
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: locating ? null : _useCurrentLocation,
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: locating
+                            ? const SizedBox(width: 20, height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: C.green))
+                            : const Icon(Icons.my_location, color: Color(0xFFC25A1F), size: 20),
+                      ),
                     ),
-                    if (locating)
-                      const Positioned(top: 12, right: 12,
-                          child: SizedBox(width: 20, height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: C.green))),
-                    Positioned(
-                      top: 12, left: 12,
-                      child: Material(
-                        color: Colors.white,
-                        shape: const CircleBorder(),
-                        elevation: 2,
-                        child: InkWell(
-                          customBorder: const CircleBorder(),
-                          onTap: locating ? null : _useCurrentLocation,
-                          child: const Padding(
-                            padding: EdgeInsets.all(9),
-                            child: Icon(Icons.my_location, color: Color(0xFFC25A1F), size: 20),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(children: [
+                      Material(
+                        elevation: 3,
+                        borderRadius: BorderRadius.circular(999),
+                        child: TextField(
+                          controller: addr,
+                          onChanged: _onSearchChanged,
+                          decoration: InputDecoration(
+                            hintText: 'Search sector or address…',
+                            prefixIcon: const Icon(Icons.search, color: C.muted),
+                            filled: true, fillColor: Colors.white,
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(999), borderSide: BorderSide.none),
+                            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(999), borderSide: BorderSide.none),
+                            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(999), borderSide: BorderSide.none),
                           ),
                         ),
                       ),
-                    ),
-                    if (picked != null)
-                      Positioned(
-                        left: 12, right: 12, bottom: 12,
-                        child: Container(
-                          padding: const EdgeInsets.all(11),
+                      if (results.isNotEmpty)
+                        Container(
+                          margin: const EdgeInsets.only(top: 8),
+                          constraints: const BoxConstraints(maxHeight: 260),
                           decoration: BoxDecoration(
                               color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                          child: Row(children: [
-                            Container(
-                              width: 30, height: 30,
-                              decoration: const BoxDecoration(color: Color(0xFFC25A1F), shape: BoxShape.circle),
-                              child: const Icon(Icons.home, color: Colors.white, size: 15),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(child: Text(picked!,
-                                maxLines: 2, overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 12))),
-                          ]),
+                          child: SingleChildScrollView(
+                            child: Column(children: results.map((r) => ListTile(
+                              leading: Container(
+                                width: 30, height: 30,
+                                decoration: const BoxDecoration(color: Color(0xFFC7EBD8), shape: BoxShape.circle),
+                                child: const Icon(Icons.place, color: C.green, size: 16),
+                              ),
+                              title: Text('${r['display_name'] ?? ''}',
+                                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+                              onTap: () => _selectResult(r),
+                            )).toList()),
+                          ),
                         ),
-                      ),
-                  ]),
-                ),
+                    ]),
+                  ),
+                ]),
               ),
-            ),
+              if (picked != null)
+                Positioned(
+                  left: 12, right: 12, bottom: 12,
+                  child: Container(
+                    padding: const EdgeInsets.all(11),
+                    decoration: BoxDecoration(
+                        color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                    child: Row(children: [
+                      Container(
+                        width: 30, height: 30,
+                        decoration: const BoxDecoration(color: Color(0xFFC25A1F), shape: BoxShape.circle),
+                        child: const Icon(Icons.home, color: Colors.white, size: 15),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(picked!,
+                          maxLines: 2, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 12))),
+                    ]),
+                  ),
+                ),
+            ]),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
@@ -3557,11 +3662,21 @@ class _ResultsScreenState extends State<ResultsScreen> {
                         final accommodation = staffAns['accommodation'];
                         final badge = i == 0 ? 'TOP MATCH' : i == 1 ? '2ND' : i == 2 ? '3RD' : null;
                         final outsideDept = u['outsideDept'] == true;
-                        final strongestLabel = labelByCode[u['bestCode']];
-                        final weakLabels = ((u['weakCodes'] as List?) ?? const [])
-                            .map((c) => labelByCode[c])
-                            .whereType<String>()
-                            .toList();
+                        // Server only sets this when the exact-programme #1 was
+                        // genuinely competitive (within 0.15 cc of the best
+                        // alternative) -- otherwise fall back to the normal
+                        // criteria-driven Strongest/Weak, unchanged.
+                        final showProgrammeReason = u['showProgrammeReason'] == true;
+                        final hasExactProgramme = u['hasExactProgramme'] == true;
+                        final strongestLabel = showProgrammeReason && hasExactProgramme
+                            ? 'Programme availability'
+                            : labelByCode[u['bestCode']];
+                        final weakLabels = showProgrammeReason && !hasExactProgramme
+                            ? const ['Programme unavailability']
+                            : ((u['weakCodes'] as List?) ?? const [])
+                                .map((c) => labelByCode[c])
+                                .whereType<String>()
+                                .toList();
                         return GestureDetector(
                           onTap: () => Navigator.push(context,
                               MaterialPageRoute(builder: (_) => DetailScreen(id: u['id'], name: u['name']))),
@@ -3778,13 +3893,14 @@ class _DetailScreenState extends State<DetailScreen> {
     });
     if (byCode.isEmpty) return null;
     final track = Session.track;
-    final entries = (track != null && byCode.containsKey(track)) ? {track: byCode[track]!} : byCode;
+    if (track != null && !byCode.containsKey(track)) return null; // not eligible here with their own combination
+    final entries = track != null ? {track: byCode[track]!} : byCode;
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
       child: eligibilityCard(entries,
-          title: track != null && byCode.containsKey(track)
+          title: track != null
               ? 'Your principal passes for $prog ($track)'
               : 'Principal passes required for $prog'),
     );
@@ -3889,17 +4005,49 @@ class _DetailScreenState extends State<DetailScreen> {
               if (campuses.isEmpty)
                 const Text('No campuses published yet.', style: TextStyle(color: C.muted, fontSize: 12))
               else
-                ...campuses.map((c) => Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                          color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                      child: Row(children: [
+                ...campuses.map((c) {
+                  // Programmes offered at this specific campus, grouped by
+                  // department -- `allProgrammes` already carries synthetic
+                  // placeholder rows for a dept with no explicitly named
+                  // programme (see listProgrammes()), so every dept the
+                  // campus offers shows up here, real name or not.
+                  final campusProgs = allProgrammes.where((p) =>
+                      (p as Map)['universityId'] == u['id'] && p['campus'] == c['name']);
+                  final byDept = <String, List<String>>{};
+                  for (final p in campusProgs) {
+                    final dept = '${(p as Map)['dept'] ?? ''}';
+                    if (dept.isEmpty) continue;
+                    final name = '${p['name'] ?? ''}';
+                    final list = byDept.putIfAbsent(dept, () => []);
+                    if (!list.any((n) => n.toLowerCase() == name.toLowerCase())) list.add(name);
+                  }
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                        color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
                         const Icon(Icons.location_on_outlined, color: C.green, size: 20),
                         const SizedBox(width: 10),
                         Text(c['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
                       ]),
-                    )),
+                      if (byDept.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        ...byDept.entries.map((e) => Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text(e.key.toUpperCase(), style: const TextStyle(
+                                    color: C.muted, fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+                                const SizedBox(height: 3),
+                                Text(e.value.join(', '),
+                                    style: const TextStyle(color: C.ink, fontSize: 12, height: 1.35)),
+                              ]),
+                            )),
+                      ],
+                    ]),
+                  );
+                }),
               const SizedBox(height: 12),
               Builder(builder: (_) {
                 final campusPins = u['campusPins'] as Map?;
@@ -4042,22 +4190,31 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ]),
               const SizedBox(height: 8),
-              Row(
-                children: List.generate(5, (i) {
-                  return IconButton(
-                    onPressed: () async {
-                      setState(() => myRating = i + 1);
-                      try {
-                        await Api.rate(widget.id, i + 1);
-                        if (mounted) toast(context, 'Thanks for rating!');
-                      } catch (e) {
-                        if (mounted) toast(context, e.toString());
-                      }
-                    },
-                    icon: Icon(i < myRating ? Icons.star : Icons.star_border, color: C.gold, size: 30),
-                  );
-                }),
-              ),
+              // A university that has never filled in its criteria answers
+              // still shows up in rankings (scored 0 against whatever the
+              // graduate picked) but there's genuinely nothing behind it yet
+              // -- so graduates can't rate it either, to avoid a rating that
+              // isn't backed by any real data.
+              if (vals.isEmpty)
+                const Text('This university hasn\'t set up its criteria answers yet, so it can\'t be rated.',
+                    style: TextStyle(color: C.muted, fontSize: 11.5, fontStyle: FontStyle.italic))
+              else
+                Row(
+                  children: List.generate(5, (i) {
+                    return IconButton(
+                      onPressed: () async {
+                        setState(() => myRating = i + 1);
+                        try {
+                          await Api.rate(widget.id, i + 1);
+                          if (mounted) toast(context, 'Thanks for rating!');
+                        } catch (e) {
+                          if (mounted) toast(context, e.toString());
+                        }
+                      },
+                      icon: Icon(i < myRating ? Icons.star : Icons.star_border, color: C.gold, size: 30),
+                    );
+                  }),
+                ),
               const SizedBox(height: 12),
               Row(children: [
                 Expanded(
@@ -4989,6 +5146,27 @@ class _StaffCombosScreenState extends State<StaffCombosScreen> {
   }
 }
 
+/// Blocks a numeric TextField from ever holding a value outside [min, max]
+/// as the user types, instead of only clamping after the fact -- so a /5
+/// rating field, for instance, can never actually contain a 6 or a 7.
+/// Text that doesn't parse yet (empty, a bare "-", a trailing ".") is let
+/// through so normal decimal entry still works.
+class _RangeInputFormatter extends TextInputFormatter {
+  _RangeInputFormatter({this.min, this.max});
+  final double? min;
+  final double? max;
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    final text = newValue.text.trim();
+    if (text.isEmpty || text == '-') return newValue;
+    final v = double.tryParse(text);
+    if (v == null) return oldValue;
+    if (min != null && v < min!) return oldValue;
+    if (max != null && v > max!) return oldValue;
+    return newValue;
+  }
+}
+
 /// ---- Staff: criteria answers (full form, mirrors the prototype) -----------
 const List<String> kReligions = [
   'No preference', 'Catholic', 'Protestant/Anglican', 'Seventh-day Adventist',
@@ -5016,7 +5194,11 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
   List<Map<String, dynamic>> _campuses = [];
   String? _activeCampus;
   bool _hasProgrammes = false;
-  final _cohortPeriodCtl = TextEditingController();
+  // C12 cohorts are always one of a fixed set of academic years -- a
+  // dropdown avoids free-text typos ("2023-2024" vs "2023/2024") that would
+  // otherwise silently split what should be one recurring cohort.
+  static const _cohortPeriods = ['2019-2020', '2020-2021', '2021-2022', '2022-2023', '2023-2024', '2024-2025'];
+  String? _cohortPeriodSel;
   final _cohortPctCtl = TextEditingController();
   final _partnerSchoolCtl = TextEditingController();
   final _companyCtl = TextEditingController();
@@ -5116,7 +5298,6 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
   @override
   void dispose() {
     routeObserver.unsubscribe(this);
-    _cohortPeriodCtl.dispose();
     _cohortPctCtl.dispose();
     _partnerSchoolCtl.dispose();
     _companyCtl.dispose();
@@ -5507,13 +5688,13 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
                 const SizedBox(height: 16),
 
                 _section('C01 · Tuition & fees'),
-                _numField('Tuition (RWF / year)', 'C01'),
+                _numField('Tuition (RWF / year)', 'C01', min: 0),
 
                 _section('C02 · Scholarships & partner schools'),
                 const Text('More partner schools raises this criterion\'s score.',
                     style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
                 const SizedBox(height: 10),
-                _numField('Scholarships offered / year', 'C02'),
+                _numField('Number of partnering schools', 'C02', min: 0),
                 const SizedBox(height: 4),
                 _partnerSchoolsField(),
 
@@ -5618,14 +5799,14 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
                 _cohortEditor(),
 
                 _section('C13 · Career services quality'),
-                _numField('Staff serving in career services', 'careerStaff'),
-                _numField('Service rating (out of 5)', 'C13'),
+                _numField('Staff serving in career services', 'careerStaff', min: 0),
+                _numField('Service rating (out of 5)', 'C13', min: 1, max: 5),
 
                 _section('C14 · Library & e-learning'),
                 _yesNo('Available?', 'library'),
 
                 _section('C15 · ICT infrastructure'),
-                _numField('Computer rooms', 'C15'),
+                _numField('Computer rooms', 'C15', min: 0),
                 _yesNo('Public Wi-Fi available?', 'publicWifi'),
 
                 _section('C16 · Sporting facilities'),
@@ -5638,24 +5819,24 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
 
                 _section('Ratings & standing'),
                 Row(children: [
-                  Expanded(child: _numField('Satisfaction (/5) · C18', 'C18')),
+                  Expanded(child: _numField('Satisfaction (/5) · C18', 'C18', min: 1, max: 5)),
                   const SizedBox(width: 10),
-                  Expanded(child: _numField('Peer reputation (/5) · C19', 'C19')),
+                  Expanded(child: _numField('Peer reputation (/5) · C19', 'C19', min: 1, max: 5)),
                 ]),
                 Row(children: [
-                  Expanded(child: _numField('National rank · C20', 'C20')),
+                  Expanded(child: _numField('National rank · C20', 'C20', min: 1)),
                   const SizedBox(width: 10),
-                  Expanded(child: _numField('Institution size · C22', 'C22')),
+                  Expanded(child: _numField('Institution size · C22', 'C22', min: 0)),
                 ]),
                 const Text('A longer track record scores higher.',
                     style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
                 const SizedBox(height: 6),
-                _numField('Years of operation · C21', 'C21'),
-                _numField('Average class size · C05', 'C05'),
+                _numField('Years of operation · C21', 'C21', min: 0),
+                _numField('Average class size · C05', 'C05', min: 0),
                 Row(children: [
-                  Expanded(child: _numField('Completion rate (%) · C06', 'C06')),
+                  Expanded(child: _numField('Completion rate (%) · C06', 'C06', min: 0, max: 100)),
                   const SizedBox(width: 10),
-                  Expanded(child: _numField('Employment rate (%) · C10', 'C10')),
+                  Expanded(child: _numField('Employment rate (%) · C10', 'C10', min: 0, max: 100)),
                 ]),
 
                 _section('C25 · Religious / cultural affiliation'),
@@ -5675,7 +5856,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
                   const Text('These criteria don\'t have a dedicated field yet — enter a number for each.',
                       style: TextStyle(color: C.muted, fontSize: 11)),
                   const SizedBox(height: 8),
-                  ...otherCriteria.map((c) => _numField('${c['label']} · ${c['code']}', c['code'] as String)),
+                  ...otherCriteria.map((c) => _numField('${c['label']} · ${c['code']}', c['code'] as String, min: 0)),
                 ],
               ],
             ),
@@ -5688,7 +5869,11 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
         child: Text(t, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink, fontSize: 14)),
       );
 
-  Widget _numField(String label, String key) => Padding(
+  // `min`/`max` hard-block out-of-range digits as they're typed (e.g. a /5
+  // rating can never become 6) rather than silently clamping after the fact.
+  // A value that doesn't parse yet (empty, a bare "-", a trailing ".") is
+  // let through so normal decimal typing still works.
+  Widget _numField(String label, String key, {double? min, double? max}) => Padding(
         padding: const EdgeInsets.only(bottom: 10),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(label, style: const TextStyle(color: C.muted, fontSize: 12)),
@@ -5697,8 +5882,16 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
             controller: TextEditingController(text: _n(key)?.toString() ?? '')
               ..selection = TextSelection.collapsed(offset: (_n(key)?.toString() ?? '').length),
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: fieldDeco('Enter a number'),
-            onChanged: (v) => d[key] = double.tryParse(v.trim()) ?? d[key],
+            inputFormatters: (min != null || max != null) ? [_RangeInputFormatter(min: min, max: max)] : null,
+            decoration: fieldDeco(max != null ? 'Enter a number (${min ?? 0}-${max.toStringAsFixed(0)})' : 'Enter a number'),
+            onChanged: (v) {
+              var parsed = double.tryParse(v.trim());
+              if (parsed != null) {
+                if (min != null && parsed < min) parsed = min;
+                if (max != null && parsed > max) parsed = max;
+              }
+              d[key] = parsed ?? d[key];
+            },
           ),
         ]),
       );
@@ -5937,7 +6130,13 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
       })),
       const SizedBox(height: 10),
       Row(children: [
-        Expanded(child: TextField(controller: _cohortPeriodCtl, decoration: fieldDeco('Cohort (e.g. 2023–2024)'))),
+        Expanded(child: DropdownButtonFormField<String>(
+          initialValue: _cohortPeriodSel,
+          decoration: fieldDeco('Academic year'),
+          hint: const Text('Academic year', style: TextStyle(fontSize: 12.5)),
+          items: _cohortPeriods.map((p) => DropdownMenuItem(value: p, child: Text(p, style: const TextStyle(fontSize: 13)))).toList(),
+          onChanged: (v) => setState(() => _cohortPeriodSel = v),
+        )),
         const SizedBox(width: 8),
         SizedBox(width: 90, child: TextField(
           controller: _cohortPctCtl,
@@ -5947,12 +6146,12 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
         IconButton(
           icon: const Icon(Icons.add_circle, color: C.green, size: 28),
           onPressed: () {
-            final period = _cohortPeriodCtl.text.trim();
+            final period = _cohortPeriodSel;
             final pct = _cohortPctCtl.text.trim();
-            if (period.isEmpty || pct.isEmpty) return;
+            if (period == null || pct.isEmpty) return;
             setState(() {
               (d['cohorts'] as List).add({'period': period, 'pct': double.tryParse(pct) ?? pct});
-              _cohortPeriodCtl.clear();
+              _cohortPeriodSel = null;
               _cohortPctCtl.clear();
               _syncC12();
             });

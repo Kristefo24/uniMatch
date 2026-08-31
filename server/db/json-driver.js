@@ -374,6 +374,13 @@ module.exports = {
     return { ok: true };
   },
   async recordRating({ userId, universityId, stars }) {
+    // A university with no criteria answers on file has nothing genuine
+    // behind a star rating -- it can still show up in rankings (scored 0),
+    // but graduates can't rate it. Mirrors the same check in mysql/supabase.
+    const u = db.universities.find(x => x.id === universityId);
+    if (!u || !u.vals || !Object.keys(u.vals).length) {
+      const e = new Error('This university has not set up its criteria answers yet.'); e.status = 400; throw e;
+    }
     const existing = db.ratings.find(r => r.userId === userId && r.universityId === universityId);
     if (existing) existing.stars = stars;
     else db.ratings.push({ id: uid('rt'), userId, universityId, stars, createdAt: new Date().toISOString() });

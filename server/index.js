@@ -227,22 +227,24 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
   if (deptEligibleIds) {
     const deptMatches = ranked.filter(u => deptEligibleIds.has(u.id));
     let filtered;
-    // Within deptMatches only: the exact-programme university jumps to #1,
-    // but only when it's genuinely competitive (cc within 0.15 of the best
-    // in-department alternative) — a big gap means it ranks at its own score
-    // instead, per "if the difference of the score is big, it ranks to its
-    // position."
+    // Within deptMatches only: the university offering the graduate's exact
+    // chosen programme always jumps to #1 -- the score gap no longer decides
+    // *whether* it's promoted. The same gap is still computed (`showProgrammeReason`)
+    // so the UI can tell whether the promotion was genuinely competitive
+    // (cc within 0.15 of the best alternative) or a big jump, and choose its
+    // Strongest/Weak messaging accordingly -- it just no longer gates the
+    // ranking itself.
     if (exactProgrammeIds) {
       const exactInDept = deptMatches.filter(u => exactProgrammeIds.has(u.id));
       const others2 = deptMatches.filter(u => !exactProgrammeIds.has(u.id));
       if (exactInDept.length && others2.length) {
         const bestExact = exactInDept[0]; // deptMatches is still cc-desc at this point
         const bestOther = others2[0];
-        filtered = bestExact.cc >= bestOther.cc - 0.15
-          ? [bestExact, ...deptMatches.filter(u => u.id !== bestExact.id)]
-          : deptMatches;
+        const showProgrammeReason = bestExact.cc >= bestOther.cc - 0.15;
+        filtered = [bestExact, ...deptMatches.filter(u => u.id !== bestExact.id)]
+          .map(u => ({ ...u, hasExactProgramme: exactProgrammeIds.has(u.id), showProgrammeReason }));
       } else {
-        filtered = deptMatches;
+        filtered = deptMatches.map(u => ({ ...u, hasExactProgramme: exactProgrammeIds.has(u.id) }));
       }
     } else {
       filtered = deptMatches;

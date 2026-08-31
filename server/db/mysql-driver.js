@@ -638,6 +638,11 @@ module.exports = {
   },
   async recordRating({ userId, universityId, stars }) {
     const p = await getPool();
+    // A university with no criteria answers on file has nothing genuine
+    // behind a star rating -- it can still show up in rankings (scored 0),
+    // but graduates can't rate it. Mirrors the same check in json/supabase.
+    const [[{ n }]] = await p.query('SELECT COUNT(*) AS n FROM criteria_values WHERE university_id=?', [universityId]);
+    if (!n) { const e = new Error('This university has not set up its criteria answers yet.'); e.status = 400; throw e; }
     await p.query(
       'INSERT INTO ratings (id,user_id,university_id,stars) VALUES (?,?,?,?) ' +
       'ON DUPLICATE KEY UPDATE stars=VALUES(stars)',

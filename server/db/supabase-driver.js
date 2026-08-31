@@ -579,6 +579,11 @@ module.exports = {
     return { ok: true };
   },
   async recordRating({ userId, universityId, stars }) {
+    // A university with no criteria answers on file has nothing genuine
+    // behind a star rating -- it can still show up in rankings (scored 0),
+    // but graduates can't rate it. Mirrors the same check in json/mysql.
+    const { rows: cv } = await q('SELECT 1 FROM criteria_values WHERE university_id=$1 LIMIT 1', [universityId]);
+    if (!cv.length) { const e = new Error('This university has not set up its criteria answers yet.'); e.status = 400; throw e; }
     await q(
       'INSERT INTO ratings (id,user_id,university_id,stars) VALUES ($1,$2,$3,$4) ' +
       'ON CONFLICT (user_id,university_id) DO UPDATE SET stars=EXCLUDED.stars',
