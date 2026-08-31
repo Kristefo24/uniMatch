@@ -573,12 +573,35 @@ module.exports = {
   async staffReport(uniId) {
     const p = await getPool();
     const [apps] = await p.query(
-      'SELECT a.home_area, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id WHERE a.university_id=?', [uniId]);
+      'SELECT a.home_area, a.created_at, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id WHERE a.university_id=?', [uniId]);
     const [[sl]] = await p.query('SELECT COUNT(*) AS n FROM shortlists WHERE university_id=?', [uniId]);
     const [[rt]] = await p.query('SELECT AVG(stars) AS avg, COUNT(*) AS n FROM ratings WHERE university_id=?', [uniId]);
-    const applicants = apps.map(a => ({ name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '' }));
+    // How many students currently have this university in their latest
+    // ranked top-5 -- same source/shape as universityPopularity(), scoped
+    // to one university instead of tallying every one.
+    const [lr] = await p.query('SELECT university_ids FROM user_last_ranking');
+    const rankedListCount = lr.filter(r => {
+      try { return JSON.parse(r.university_ids || '[]').some(u => u.id === uniId); } catch { return false; }
+    }).length;
+    const applicants = apps.map(a => ({
+      name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '',
+      date: a.created_at ? new Date(a.created_at).toISOString().slice(0, 10) : '',
+    }));
     const byHome = {};
     applicants.forEach(a => { const h = a.home || 'Unknown'; byHome[h] = (byHome[h] || 0) + 1; });
+    // Week-over-week application growth. Legacy applications predating the
+    // created_at column are NULL -- they still count toward applyCount but
+    // can't be placed in either window, so they're excluded from both
+    // rather than guessed into one and skewing the very first reading.
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    let applyLast7 = 0, applyPrev7 = 0;
+    for (const a of apps) {
+      if (!a.created_at) continue;
+      const age = now - new Date(a.created_at).getTime();
+      if (age >= 0 && age < 7 * day) applyLast7++;
+      else if (age >= 7 * day && age < 14 * day) applyPrev7++;
+    }
     return {
       appearedCount: (sl.n || 0) + apps.length,
       shortlistCount: sl.n || 0,
@@ -587,6 +610,9 @@ module.exports = {
       homeAreas: Object.entries(byHome).map(([home, count]) => ({ home, count })).sort((a, b) => b.count - a.count),
       avgRating: rt.avg != null ? Number(Number(rt.avg).toFixed(2)) : null,
       ratingCount: rt.n || 0,
+      rankedListCount,
+      applyLast7,
+      applyPrev7,
     };
   },
   async adminReport() {
@@ -597,14 +623,15 @@ module.exports = {
     const applyBy = Object.fromEntries(applyRows.map(r => [r.university_id, r.n]));
     const slBy = Object.fromEntries(slRows.map(r => [r.university_id, r.n]));
     const [apps] = await p.query(
-      'SELECT a.home_area, a.university_id, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id');
+      'SELECT a.home_area, a.university_id, a.created_at, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id');
     const [students] = await p.query('SELECT name,email,home,home_area,suspended FROM users WHERE role="student"');
     const [staff] = await p.query('SELECT name,email,status FROM staff_requests');
     const [[rt]] = await p.query('SELECT AVG(stars) AS avg FROM ratings');
     const uName = Object.fromEntries(unis.map(u => [u.id, u.name]));
     return {
       universities: unis.map(u => ({ abbr: u.abbr, name: u.name, applications: applyBy[u.id] || 0, shortlists: slBy[u.id] || 0 })),
-      applications: apps.map(a => ({ student: a.name || 'A2 graduate', email: a.email || '', university: uName[a.university_id] || a.university_id, home: a.home_area || '', date: '' })),
+      applications: apps.map(a => ({ student: a.name || 'A2 graduate', email: a.email || '', university: uName[a.university_id] || a.university_id, home: a.home_area || '',
+          date: a.created_at ? new Date(a.created_at).toISOString().slice(0, 10) : '' })),
       students: students.map(s => ({ name: s.name, email: s.email, home: s.home_area || s.home || '', suspended: !!s.suspended })),
       staff: staff.map(s => ({ name: s.name, email: s.email, status: s.status })),
       avgRating: rt.avg != null ? Number(Number(rt.avg).toFixed(2)) : null,
@@ -614,7 +641,7 @@ module.exports = {
   async recordApplication({ userId, universityId, programmeId, homeArea }) {
     const p = await getPool();
     const id = uid('app');
-    await p.query('INSERT INTO applications (id,user_id,university_id,programme_id,home_area) VALUES (?,?,?,?,?)',
+    await p.query('INSERT INTO applications (id,user_id,university_id,programme_id,home_area,created_at) VALUES (?,?,?,?,?,NOW())',
       [id, userId, universityId, programmeId, homeArea]);
     return { id };
   },
@@ -663,12 +690,35 @@ module.exports = {
     }
     return { ok: true };
   },
-  async criteriaUsageCounts() {
+  async criteriaUsageCounts(universityId) {
     const p = await getPool();
-    const [rows] = await p.query(
-      'SELECT cs.code, c.label, COUNT(*) AS count FROM criteria_selections cs ' +
-      'LEFT JOIN criteria c ON c.code = cs.code GROUP BY cs.code, c.label ORDER BY count DESC');
-    return rows.map(r => ({ code: r.code, label: r.label || r.code, count: r.count }));
+    if (!universityId) {
+      const [rows] = await p.query(
+        'SELECT cs.code, c.label, COUNT(*) AS count FROM criteria_selections cs ' +
+        'LEFT JOIN criteria c ON c.code = cs.code GROUP BY cs.code, c.label ORDER BY count DESC');
+      return rows.map(r => ({ code: r.code, label: r.label || r.code, count: r.count }));
+    }
+    // criteria_selections isn't tied to a university (a student weighs
+    // criteria once, then ranks everyone with them) -- so a per-university
+    // breakdown is derived from user_last_ranking instead: for every
+    // student whose latest ranking actually included this university,
+    // tally the criteria codes that ranking was run with.
+    const [rows] = await p.query('SELECT university_ids, criteria FROM user_last_ranking');
+    const [labelRows] = await p.query('SELECT code, label FROM criteria');
+    const labelByCode = Object.fromEntries(labelRows.map(r => [r.code, r.label]));
+    const counts = {};
+    for (const row of rows) {
+      let unis = [], crit = [];
+      try { unis = JSON.parse(row.university_ids || '[]'); } catch { /* ignore malformed row */ }
+      try { crit = JSON.parse(row.criteria || '[]'); } catch { /* ignore malformed row */ }
+      if (!unis.some(u => u.id === universityId)) continue;
+      for (const c of crit) {
+        const code = c && c.code;
+        if (!code) continue;
+        counts[code] = (counts[code] || 0) + 1;
+      }
+    }
+    return Object.entries(counts).map(([code, count]) => ({ code, label: labelByCode[code] || code, count }));
   },
 
   async saveUserLastRanking(userId, ranked, criteria) {

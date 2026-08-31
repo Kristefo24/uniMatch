@@ -441,8 +441,8 @@ class Api {
   static Future<void> updateCriterion(String code, String label, String category, String direction) =>
       _put('/admin/criteria/$code', {'label': label, 'category': category, 'direction': direction});
   static Future<void> deleteCriterion(String code) => _delete('/admin/criteria/$code');
-  static Future<List<dynamic>> criteriaUsage() async =>
-      await _get('/admin/criteria-usage') as List<dynamic>;
+  static Future<List<dynamic>> criteriaUsage({String? universityId}) async =>
+      await _get('/admin/criteria-usage${universityId != null ? '?universityId=${Uri.encodeQueryComponent(universityId)}' : ''}') as List<dynamic>;
 
   // ---- admin: subject-combination catalogue ----
   static Future<List<dynamic>> adminCombinations() async =>
@@ -4039,9 +4039,13 @@ class _DetailScreenState extends State<DetailScreen> {
                               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                 Text(e.key.toUpperCase(), style: const TextStyle(
                                     color: C.muted, fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
-                                const SizedBox(height: 3),
-                                Text(e.value.join(', '),
-                                    style: const TextStyle(color: C.ink, fontSize: 12, height: 1.35)),
+                                const SizedBox(height: 5),
+                                Wrap(spacing: 6, runSpacing: 6, children: e.value.map((n) => Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                      child: Text(n, style: const TextStyle(
+                                          fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                    )).toList()),
                               ]),
                             )),
                       ],
@@ -4456,6 +4460,10 @@ class _StaffDashboardState extends State<StaffDashboard> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
               children: [
+                if (Session.uniId != null) ...[
+                  _StaffReachPieChart(uniId: Session.uniId!),
+                  const SizedBox(height: 18),
+                ],
                 Text('Manage', style: head(17, weight: FontWeight.w500)),
                 const SizedBox(height: 8),
                 _card(context, 'Campuses & programmes', 'Add campuses, departments and programmes',
@@ -6186,17 +6194,46 @@ class StaffReportsScreen extends StatefulWidget {
 
 class _StaffReportsScreenState extends State<StaffReportsScreen> {
   late Future<Map<String, dynamic>> _future;
+  // Null = no filter (all-time, including legacy undated applications).
+  // Once either is set, undated rows are excluded rather than guessed in.
+  DateTime? from;
+  DateTime? to;
+
   @override
   void initState() {
     super.initState();
     _future = Api.staffReport(_staffUni);
   }
 
+  String _fmtDate(DateTime? d) => d == null
+      ? 'Any date'
+      : '${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}/${d.year}';
+
+  Future<void> _pickDate(bool isFrom) async {
+    final d = await showDatePicker(
+      context: context,
+      initialDate: (isFrom ? from : to) ?? DateTime.now(),
+      firstDate: DateTime(2024), lastDate: DateTime(2027),
+    );
+    if (d != null) setState(() => isFrom ? from = d : to = d);
+  }
+
+  bool _inRange(String dateStr) {
+    if (from == null && to == null) return true;
+    if (dateStr.isEmpty) return false;
+    final d = DateTime.tryParse(dateStr);
+    if (d == null) return false;
+    if (from != null && d.isBefore(DateTime(from!.year, from!.month, from!.day))) return false;
+    if (to != null && d.isAfter(DateTime(to!.year, to!.month, to!.day, 23, 59, 59))) return false;
+    return true;
+  }
+
   void _downloadApplicants(List apps) {
+    final filtered = apps.where((a) => _inRange('${a['date'] ?? ''}')).toList();
     csv_download.downloadCsv('applicants.csv', _toCsv(
-        ['Name', 'Email', 'Home area'],
-        apps.map((a) => [a['name'], a['email'], a['home']]).toList()));
-    if (mounted) toast(context, 'Downloading applicants.csv (${apps.length} rows)');
+        ['Name', 'Email', 'Home area', 'Date'],
+        filtered.map((a) => [a['name'], a['email'], a['home'], a['date']]).toList()));
+    if (mounted) toast(context, 'Downloading applicants.csv (${filtered.length} rows)');
   }
 
   void _downloadHomeAreas(List areas) {
@@ -6247,21 +6284,28 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
                   label: const Text('CSV', style: TextStyle(color: C.green)),
                 ),
               ]),
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(child: _dateField(_fmtDate(from), () => _pickDate(true))),
+                const SizedBox(width: 10),
+                Expanded(child: _dateField(_fmtDate(to), () => _pickDate(false))),
+                if (from != null || to != null) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    onPressed: () => setState(() { from = null; to = null; }),
+                    icon: const Icon(Icons.close, size: 18, color: C.muted),
+                    tooltip: 'Clear dates',
+                  ),
+                ],
+              ]),
+              const SizedBox(height: 4),
+              const Text('The date range applies to the CSV download above.',
+                  style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
+              const SizedBox(height: 12),
               if (apps.isEmpty)
                 const Text('No applicants yet.', style: TextStyle(color: C.muted))
               else
-                ...apps.map((a) => Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(13),
-                      decoration: BoxDecoration(
-                          color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(a['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
-                        Text('${a['email'] ?? ''} · ${a['home'] ?? ''}',
-                            style: const TextStyle(color: C.muted, fontSize: 11)),
-                      ]),
-                    )),
+                _growthCard((r['applyLast7'] as num?)?.toInt() ?? 0, (r['applyPrev7'] as num?)?.toInt() ?? 0),
               const SizedBox(height: 20),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('Reach by home area', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
@@ -6302,6 +6346,52 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
           Text(label, style: const TextStyle(color: C.muted, fontSize: 11)),
         ]),
       );
+
+  Widget _dateField(String text, VoidCallback onTap) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          height: 50, padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+          child: Row(children: [
+            Expanded(child: Text(text, style: const TextStyle(color: C.ink, fontSize: 14))),
+            const Icon(Icons.calendar_today_outlined, size: 16, color: C.muted),
+          ]),
+        ),
+      );
+
+  /// Replaces a per-graduate name/email list with a week-over-week signal --
+  /// easier to read at a glance and doesn't require scrolling a growing
+  /// roster just to see whether interest is picking up or cooling off.
+  Widget _growthCard(int last7, int prev7) {
+    String text; Color color; IconData icon;
+    if (last7 == 0 && prev7 == 0) {
+      text = 'No new applications this week'; color = C.muted; icon = Icons.trending_flat;
+    } else if (prev7 == 0) {
+      text = '$last7 new application${last7 == 1 ? '' : 's'} this week'; color = C.green; icon = Icons.trending_up;
+    } else {
+      final pct = (last7 - prev7) / prev7 * 100;
+      final up = pct >= 0;
+      text = '${up ? '+' : ''}${pct.toStringAsFixed(0)}% vs last week';
+      color = up ? C.green : const Color(0xFFB4472A);
+      icon = up ? Icons.trending_up : Icons.trending_down;
+    }
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
+      child: Row(children: [
+        Container(width: 40, height: 40,
+            decoration: BoxDecoration(color: color.withValues(alpha: 0.12), shape: BoxShape.circle),
+            child: Icon(icon, color: color, size: 20)),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(text, style: TextStyle(fontWeight: FontWeight.w700, color: color, fontSize: 14)),
+          const SizedBox(height: 2),
+          Text('$last7 application${last7 == 1 ? '' : 's'} in the last 7 days · $prev7 the week before',
+              style: const TextStyle(color: C.muted, fontSize: 11)),
+        ])),
+      ]),
+    );
+  }
 }
 
 /// ===========================================================================
@@ -6563,7 +6653,11 @@ class _PiePainter extends CustomPainter {
       final sweep = pct / 100 * 2 * math.pi;
       if (sweep <= 0) continue;
       any = true;
-      final paint = Paint()..color = C.uni('${u['abbr']}')..style = PaintingStyle.fill;
+      // A slice may carry its own explicit color (e.g. the staff dashboard's
+      // two-metric chart, where both slices are the same university so
+      // C.uni(abbr) can't tell them apart) -- fall back to the university
+      // color lookup for callers that don't (admin's multi-university chart).
+      final paint = Paint()..color = (u['color'] as Color?) ?? C.uni('${u['abbr']}')..style = PaintingStyle.fill;
       canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true, paint);
       startAngle += sweep;
     }
@@ -6575,6 +6669,114 @@ class _PiePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _PiePainter oldDelegate) => oldDelegate.universities != universities;
+}
+
+/// Staff-facing counterpart to `_UniversityPopularityChart` -- instead of
+/// comparing many universities to each other, this compares two reach
+/// metrics for the staff's OWN university: how many students currently have
+/// it in their latest ranked top-5, versus how many actually tapped Apply.
+/// Both slices are the same university, so `C.uni(abbr)` can't tell them
+/// apart -- explicit, hand-picked colors are passed to `_PiePainter` instead.
+class _StaffReachPieChart extends StatefulWidget {
+  final String uniId;
+  const _StaffReachPieChart({required this.uniId});
+  @override
+  State<_StaffReachPieChart> createState() => _StaffReachPieChartState();
+}
+
+class _StaffReachPieChartState extends State<_StaffReachPieChart> {
+  static const _appearedColor = Color(0xFF2A9D8F); // teal
+  static const _appliedColor = Color(0xFFE76F51); // coral
+  int? rankedListCount;
+  int? applyCount;
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    Api.staffReport(widget.uniId).then((r) {
+      if (mounted) {
+        setState(() {
+          rankedListCount = (r['rankedListCount'] as num?)?.toInt() ?? 0;
+          applyCount = (r['applyCount'] as num?)?.toInt() ?? 0;
+          loading = false;
+        });
+      }
+    }).catchError((_) { if (mounted) setState(() => loading = false); });
+  }
+
+  void _download() {
+    csv_download.downloadCsv('dashboard-overview.csv', _toCsv(
+        ['Metric', 'Count'],
+        [['Appeared on students\' lists', rankedListCount ?? 0], ['Tapped Apply', applyCount ?? 0]]));
+    if (mounted) toast(context, 'Downloading dashboard-overview.csv');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = (rankedListCount ?? 0) + (applyCount ?? 0);
+    final slices = [
+      {'label': 'Appeared on lists', 'count': rankedListCount ?? 0, 'color': _appearedColor,
+        'pct': total > 0 ? (rankedListCount ?? 0) / total * 100 : 0},
+      {'label': 'Tapped Apply', 'count': applyCount ?? 0, 'color': _appliedColor,
+        'pct': total > 0 ? (applyCount ?? 0) / total * 100 : 0},
+    ];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          const Expanded(
+            child: Text('YOUR REACH', style: TextStyle(
+                fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: C.muted)),
+          ),
+          if (!loading && total > 0)
+            TextButton.icon(
+              onPressed: _download,
+              icon: const Icon(Icons.download, size: 15, color: C.green),
+              label: const Text('CSV', style: TextStyle(color: C.green, fontSize: 12)),
+              style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0)),
+            ),
+        ]),
+        const SizedBox(height: 4),
+        const Text('Students who had you in their ranked list vs. who tapped Apply.',
+            style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
+        const SizedBox(height: 14),
+        if (loading)
+          const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: C.green)))
+        else if (total == 0)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Text('Not enough data yet.', style: TextStyle(color: C.muted, fontSize: 12)),
+          )
+        else
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CustomPaint(
+              size: const Size(120, 120),
+              painter: _PiePainter(slices),
+            ),
+            const SizedBox(width: 18),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: slices.map((s) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Container(width: 10, height: 10,
+                        decoration: BoxDecoration(color: s['color'] as Color, shape: BoxShape.circle)),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text('${s['label']}', style: const TextStyle(fontSize: 12, color: C.ink, fontWeight: FontWeight.w600))),
+                    const SizedBox(width: 6),
+                    Text('${s['count']} (${(s['pct'] as num).toStringAsFixed(0)}%)',
+                        style: const TextStyle(fontSize: 11.5, color: C.muted, fontWeight: FontWeight.w600)),
+                  ]),
+                );
+              }).toList()),
+            ),
+          ]),
+      ]),
+    );
+  }
 }
 
 /// ---- Admin: staff approvals -----------------------------------------------
@@ -7403,7 +7605,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   void initState() {
     super.initState();
     _future = Api.adminReport();
-    Api.criteriaUsage().then((v) { if (mounted) setState(() => criteriaUsage = v); }).catchError((_) {});
+    _loadCriteriaUsage(null);
   }
 
   String _fmt(DateTime d) =>
@@ -7416,6 +7618,17 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
       firstDate: DateTime(2024), lastDate: DateTime(2027),
     );
     if (d != null) setState(() => isFrom ? from = d : to = d);
+  }
+
+  // Criteria selections aren't tied to a university in the schema, so a
+  // per-university breakdown is a separate server round-trip (derived from
+  // each student's latest ranking) rather than a client-side filter of the
+  // global counts -- refetched whenever the university picker changes while
+  // "Most-chosen criteria" is the active report type.
+  void _loadCriteriaUsage(String? universityId) {
+    Api.criteriaUsage(universityId: universityId).then((v) {
+      if (mounted) setState(() => criteriaUsage = v);
+    }).catchError((_) {});
   }
 
   @override
@@ -7432,9 +7645,15 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
           if (snap.hasError) return _errorView(snap.error.toString());
           final r = snap.data ?? {};
           final unis = List<Map>.from((r['universities'] as List?)?.map((e) => e as Map) ?? const []);
-          final apps = (r['applications'] as List?) ?? [];
           final uniNames = ['All universities', ...unis.map((u) => (u['name'] ?? '').toString())];
           if (!uniNames.contains(reportUni)) reportUni = 'All universities';
+          final uniIdByName = { for (final u in unis) '${u['name']}': '${u['id']}' };
+
+          // "A2 applicants list" already carries a university name per row,
+          // so the picker can filter it directly -- no server round-trip.
+          final apps = ((r['applications'] as List?) ?? [])
+              .where((a) => reportUni == 'All universities' || a['university'] == reportUni)
+              .toList();
 
           final totalApps = unis.fold<int>(0, (a, u) => a + ((u['applications'] as num?)?.toInt() ?? 0));
           final avgRating = (r['avgRating'] as num?)?.toDouble();
@@ -7444,22 +7663,44 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
           String rowUnit;
           if (reportType == 'Shortlist / interest trends') {
             rows = unis.map((u) => {'name': u['name'], 'abbr': u['abbr'], 'n': (u['shortlists'] as num?)?.toInt() ?? 0}).toList();
+            if (reportUni != 'All universities') rows = rows.where((u) => u['name'] == reportUni).toList();
             rowUnit = 'shortlists';
           } else if (reportType == 'Most-chosen criteria') {
+            // Already server-scoped to reportUni via _loadCriteriaUsage --
+            // criteriaUsage only ever holds the counts for the current picker state.
             rows = criteriaUsage.map((c) => {'name': (c as Map)['label'], 'abbr': c['code'], 'n': (c['count'] as num).toInt()}).toList();
             rowUnit = 'selections';
           } else {
             rows = unis.map((u) => {'name': u['name'], 'abbr': u['abbr'], 'n': (u['applications'] as num?)?.toInt() ?? 0}).toList();
             rowUnit = 'applications';
           }
-          rows.sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
-          final maxN = rows.isEmpty ? 1 : (rows.first['n'] as int).clamp(1, 1 << 30);
+          // Per your instruction: a university-scoped "Most-chosen criteria"
+          // reads ascending (smallest first); every other case keeps the
+          // existing descending (largest/most-popular first) order.
+          if (reportType == 'Most-chosen criteria' && reportUni != 'All universities') {
+            rows.sort((a, b) => (a['n'] as int).compareTo(b['n'] as int));
+          } else {
+            rows.sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
+          }
+          final maxN = rows.isEmpty ? 1 : rows.map((r) => r['n'] as int).fold(1, math.max).clamp(1, 1 << 30);
 
           return ListView(
             padding: const EdgeInsets.all(20),
             children: [
               _lbl('REPORT TYPE'),
-              _dropdown(reportType, _types, (v) => setState(() => reportType = v!)),
+              _dropdown(reportType, _types, (v) {
+                setState(() {
+                  reportType = v!;
+                  // This report type is inherently already broken down by
+                  // every university -- scoping it further is redundant, so
+                  // its own picker below gets disabled instead. Reset any
+                  // stale selection so it isn't left invisibly active.
+                  if (v == 'Applications by university') reportUni = 'All universities';
+                });
+                if (v == 'Most-chosen criteria') {
+                  _loadCriteriaUsage(reportUni == 'All universities' ? null : uniIdByName[reportUni]);
+                }
+              }),
               const SizedBox(height: 6),
               Text(_typeHint[reportType] ?? '', style: const TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
               const SizedBox(height: 14),
@@ -7469,7 +7710,12 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                 Expanded(child: _dateField(_fmt(to), () => _pickDate(false))),
               ]),
               const SizedBox(height: 12),
-              _dropdown(reportUni, uniNames, (v) => setState(() => reportUni = v!)),
+              _dropdown(reportUni, uniNames, reportType == 'Applications by university' ? null : (v) {
+                setState(() => reportUni = v!);
+                if (reportType == 'Most-chosen criteria') {
+                  _loadCriteriaUsage(v == 'All universities' ? null : uniIdByName[v]);
+                }
+              }),
               const SizedBox(height: 16),
               // stat cards
               Row(children: [
@@ -7563,7 +7809,10 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
         child: Text(t, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: C.green, letterSpacing: 0.5)),
       );
 
-  Widget _dropdown(String value, List<String> items, ValueChanged<String?> onChanged) => Container(
+  // `onChanged: null` disables the dropdown outright (greyed, unresponsive)
+  // -- used when a report type already breaks results down by every
+  // university, so scoping it further would be redundant.
+  Widget _dropdown(String value, List<String> items, ValueChanged<String?>? onChanged) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 14),
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
         child: DropdownButtonHideUnderline(

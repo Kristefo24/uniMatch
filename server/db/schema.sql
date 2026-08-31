@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS applications (
   programme_id   VARCHAR(64),
   home_area      VARCHAR(160)
 );
+-- No DEFAULT here on purpose: a default would stamp every pre-existing row
+-- with "now" the instant this migration runs, faking a burst of activity in
+-- the very first growth-rate reading. Existing rows stay NULL (legacy,
+-- undated); only applications inserted from here on get a real timestamp.
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS shortlists (
   id             VARCHAR(64) PRIMARY KEY,

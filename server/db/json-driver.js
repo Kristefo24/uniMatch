@@ -303,12 +303,33 @@ module.exports = {
   async staffReport(uniId) {
     const apps = db.applications.filter(a => a.universityId === uniId);
     const shortlists = db.shortlists.filter(s => s.universityId === uniId);
+    // How many students currently have this university in their latest
+    // ranked top-5 -- same source/shape as universityPopularity(), scoped
+    // to one university instead of tallying every one.
+    const rankedListCount = Object.values(db.userLastRanking || {})
+      .filter(row => (row.ranked || []).some(u => u.id === uniId)).length;
     const applicants = apps.map(a => {
       const u = db.users.find(x => x.id === a.userId);
-      return { name: u ? u.name : 'A2 graduate', email: u ? u.email : '', home: a.homeArea || (u && u.home) || '' };
+      return {
+        name: u ? u.name : 'A2 graduate', email: u ? u.email : '', home: a.homeArea || (u && u.home) || '',
+        date: (a.createdAt || '').slice(0, 10),
+      };
     });
     const byHome = {};
     applicants.forEach(a => { const h = a.home || 'Unknown'; byHome[h] = (byHome[h] || 0) + 1; });
+    // Week-over-week application growth. Legacy applications predating this
+    // feature all carry a real createdAt already (json-driver always
+    // stamped one), so no undated exclusion is needed here unlike the SQL
+    // drivers -- but the window math is identical for consistency.
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    let applyLast7 = 0, applyPrev7 = 0;
+    for (const a of apps) {
+      if (!a.createdAt) continue;
+      const age = now - new Date(a.createdAt).getTime();
+      if (age >= 0 && age < 7 * day) applyLast7++;
+      else if (age >= 7 * day && age < 14 * day) applyPrev7++;
+    }
     return {
       appearedCount: shortlists.length + apps.length,
       shortlistCount: shortlists.length,
@@ -316,6 +337,9 @@ module.exports = {
       applicants,
       homeAreas: Object.entries(byHome).map(([home, count]) => ({ home, count })).sort((a, b) => b.count - a.count),
       ...ratingSummary(uniId),
+      rankedListCount,
+      applyLast7,
+      applyPrev7,
     };
   },
 
@@ -399,13 +423,30 @@ module.exports = {
     save();
     return { ok: true };
   },
-  async criteriaUsageCounts() {
-    const counts = {};
-    db.criteriaSelections.forEach(s => { counts[s.code] = (counts[s.code] || 0) + 1; });
+  async criteriaUsageCounts(universityId) {
     const byCode = Object.fromEntries((db.criteria || []).map(c => [c.code, c]));
-    return Object.entries(counts)
-      .map(([code, count]) => ({ code, label: byCode[code]?.label || code, count }))
-      .sort((a, b) => b.count - a.count);
+    if (!universityId) {
+      const counts = {};
+      db.criteriaSelections.forEach(s => { counts[s.code] = (counts[s.code] || 0) + 1; });
+      return Object.entries(counts)
+        .map(([code, count]) => ({ code, label: byCode[code]?.label || code, count }))
+        .sort((a, b) => b.count - a.count);
+    }
+    // criteriaSelections isn't tied to a university (a student weighs
+    // criteria once, then ranks everyone with them) -- so a per-university
+    // breakdown is derived from userLastRanking instead: for every student
+    // whose latest ranking actually included this university, tally the
+    // criteria codes that ranking was run with.
+    const counts = {};
+    for (const row of Object.values(db.userLastRanking || {})) {
+      if (!(row.ranked || []).some(u => u.id === universityId)) continue;
+      for (const c of row.criteria || []) {
+        const code = c && c.code;
+        if (!code) continue;
+        counts[code] = (counts[code] || 0) + 1;
+      }
+    }
+    return Object.entries(counts).map(([code, count]) => ({ code, label: byCode[code]?.label || code, count }));
   },
 
   async saveUserLastRanking(userId, ranked, criteria) {

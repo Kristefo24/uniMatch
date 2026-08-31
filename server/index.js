@@ -424,8 +424,8 @@ app.put('/admin/combinations/:code', auth(), requireRole('admin'), wrap(async (r
 app.delete('/admin/combinations/:code', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.deleteCombination(req.params.code));
 }));
-app.get('/admin/criteria-usage', auth(), requireRole('admin'), wrap(async (_req, res) => {
-  res.json(await db.criteriaUsageCounts());
+app.get('/admin/criteria-usage', auth(), requireRole('admin'), wrap(async (req, res) => {
+  res.json(await db.criteriaUsageCounts(req.query.universityId || null));
 }));
 app.get('/admin/university-popularity', auth(), requireRole('admin'), wrap(async (_req, res) => {
   res.json(await db.universityPopularity());
