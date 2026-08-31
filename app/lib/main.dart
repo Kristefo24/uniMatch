@@ -6640,7 +6640,11 @@ class _UniversityPopularityChartState extends State<_UniversityPopularityChart> 
 
 class _PiePainter extends CustomPainter {
   final List<Map> universities;
-  _PiePainter(this.universities);
+  // Opt-in: draws a small dark rounded badge with "NN%" on top of each
+  // slice, matching the reference chart style. Off by default so the admin
+  // popularity chart (many slices, tap-for-detail instead) is unaffected.
+  final bool showLabels;
+  _PiePainter(this.universities, {this.showLabels = false});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -6659,6 +6663,23 @@ class _PiePainter extends CustomPainter {
       // color lookup for callers that don't (admin's multi-university chart).
       final paint = Paint()..color = (u['color'] as Color?) ?? C.uni('${u['abbr']}')..style = PaintingStyle.fill;
       canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true, paint);
+      // Skip a label on a sliver too thin to hold one legibly.
+      if (showLabels && pct >= 5) {
+        final mid = startAngle + sweep / 2;
+        final labelCenter = center + Offset(math.cos(mid), math.sin(mid)) * (radius * 0.62);
+        final text = '${pct.toStringAsFixed(0)}%';
+        final tp = TextPainter(
+          text: TextSpan(text: text, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final badgeRect = Rect.fromCenter(
+            center: labelCenter, width: tp.width + 14, height: tp.height + 8);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(badgeRect, const Radius.circular(6)),
+          Paint()..color = Colors.black.withValues(alpha: 0.55),
+        );
+        tp.paint(canvas, labelCenter - Offset(tp.width / 2, tp.height / 2));
+      }
       startAngle += sweep;
     }
     if (!any) {
@@ -6668,7 +6689,8 @@ class _PiePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _PiePainter oldDelegate) => oldDelegate.universities != universities;
+  bool shouldRepaint(covariant _PiePainter oldDelegate) =>
+      oldDelegate.universities != universities || oldDelegate.showLabels != showLabels;
 }
 
 /// Staff-facing counterpart to `_UniversityPopularityChart` -- instead of
@@ -6685,8 +6707,8 @@ class _StaffReachPieChart extends StatefulWidget {
 }
 
 class _StaffReachPieChartState extends State<_StaffReachPieChart> {
-  static const _appearedColor = Color(0xFF2A9D8F); // teal
-  static const _appliedColor = Color(0xFFE76F51); // coral
+  static const _appearedColor = Color(0xFF4472C4); // dark blue
+  static const _appliedColor = Color(0xFFA9C0E8); // light blue
   int? rankedListCount;
   int? applyCount;
   bool loading = true;
@@ -6754,7 +6776,7 @@ class _StaffReachPieChartState extends State<_StaffReachPieChart> {
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             CustomPaint(
               size: const Size(120, 120),
-              painter: _PiePainter(slices),
+              painter: _PiePainter(slices, showLabels: true),
             ),
             const SizedBox(width: 18),
             Expanded(
@@ -6762,13 +6784,9 @@ class _StaffReachPieChartState extends State<_StaffReachPieChart> {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(width: 10, height: 10,
-                        decoration: BoxDecoration(color: s['color'] as Color, shape: BoxShape.circle)),
+                    Container(width: 12, height: 12, color: s['color'] as Color),
                     const SizedBox(width: 8),
-                    Expanded(child: Text('${s['label']}', style: const TextStyle(fontSize: 12, color: C.ink, fontWeight: FontWeight.w600))),
-                    const SizedBox(width: 6),
-                    Text('${s['count']} (${(s['pct'] as num).toStringAsFixed(0)}%)',
-                        style: const TextStyle(fontSize: 11.5, color: C.muted, fontWeight: FontWeight.w600)),
+                    Text('${s['label']}', style: const TextStyle(fontSize: 12, color: C.ink, fontWeight: FontWeight.w600)),
                   ]),
                 );
               }).toList()),
@@ -7425,6 +7443,14 @@ class _AdminCombosScreenState extends State<AdminCombosScreen> {
   }
 }
 
+/// Capitalizes the first letter of every word (e.g. "UMUTONI MIZERO QUEEN"
+/// or "kris" -> "Umutoni Mizero Queen" / "Kris") -- names arrive in whatever
+/// casing the graduate typed at signup, never normalized before display.
+String _titleCase(String s) => s
+    .split(' ')
+    .map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1).toLowerCase())
+    .join(' ');
+
 /// ---- Admin: student accounts (suspend / restore) --------------------------
 class AdminStudentsScreen extends StatefulWidget {
   const AdminStudentsScreen({super.key});
@@ -7505,7 +7531,7 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(m['name'] ?? '',
+                        Text(_titleCase('${m['name'] ?? ''}'),
                             style: TextStyle(fontWeight: FontWeight.w600, color: suspended ? C.muted : C.ink)),
                         Text('${m['email']} · ${suspended ? 'Suspended' : 'Active'}',
                             style: const TextStyle(color: C.muted, fontSize: 11)),
