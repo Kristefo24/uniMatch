@@ -629,7 +629,7 @@ module.exports = {
     const [[rt]] = await p.query('SELECT AVG(stars) AS avg FROM ratings');
     const uName = Object.fromEntries(unis.map(u => [u.id, u.name]));
     return {
-      universities: unis.map(u => ({ abbr: u.abbr, name: u.name, applications: applyBy[u.id] || 0, shortlists: slBy[u.id] || 0 })),
+      universities: unis.map(u => ({ id: u.id, abbr: u.abbr, name: u.name, applications: applyBy[u.id] || 0, shortlists: slBy[u.id] || 0 })),
       applications: apps.map(a => ({ student: a.name || 'A2 graduate', email: a.email || '', university: uName[a.university_id] || a.university_id, home: a.home_area || '',
           date: a.created_at ? new Date(a.created_at).toISOString().slice(0, 10) : '' })),
       students: students.map(s => ({ name: s.name, email: s.email, home: s.home_area || s.home || '', suspended: !!s.suspended })),

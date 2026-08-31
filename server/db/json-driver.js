@@ -365,7 +365,7 @@ module.exports = {
       : null;
     return {
       universities: db.universities.map(u => ({
-        abbr: u.abbr, name: u.name,
+        id: u.id, abbr: u.abbr, name: u.name,
         applications: applyByUni[u.id] || 0,
         shortlists: shortlistByUni[u.id] || 0,
       })),
