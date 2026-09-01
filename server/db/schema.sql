@@ -24,6 +24,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_expires VARCHAR(40);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS home_area VARCHAR(160);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS home_lat DOUBLE PRECISION;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS home_lng DOUBLE PRECISION;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspend_reason TEXT;
 
 -- Evaluation criteria the admin manages. direction: 'cost' | 'benefit'.
 CREATE TABLE IF NOT EXISTS criteria (

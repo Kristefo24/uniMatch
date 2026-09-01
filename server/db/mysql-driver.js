@@ -412,9 +412,12 @@ module.exports = {
     const [rows] = await p.query('SELECT id,name,email,home,suspended FROM users WHERE role="student"');
     return rows.map(u => ({ id: u.id, name: u.name, email: u.email, home: u.home || '', suspended: !!u.suspended }));
   },
-  async setStudentSuspended(id, suspended) {
+  async setStudentSuspended(id, suspended, reason) {
     const p = await getPool();
-    await p.query('UPDATE users SET suspended=? WHERE id=?', [suspended ? 1 : 0, id]);
+    // Restoring always clears the reason -- it only ever describes the
+    // CURRENT suspension, never a stale one from a previous incident.
+    await p.query('UPDATE users SET suspended=?, suspend_reason=? WHERE id=?',
+      [suspended ? 1 : 0, suspended ? (reason || null) : null, id]);
     return { id, suspended: !!suspended };
   },
   async deleteStudent(id) {
@@ -573,7 +576,9 @@ module.exports = {
   async staffReport(uniId) {
     const p = await getPool();
     const [apps] = await p.query(
-      'SELECT a.home_area, a.created_at, u.name, u.email FROM applications a LEFT JOIN users u ON u.id=a.user_id WHERE a.university_id=?', [uniId]);
+      'SELECT a.home_area, a.created_at, u.name, u.email, u.track, p.name AS programme_name, p.dept AS programme_dept ' +
+      'FROM applications a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN programmes p ON p.id=a.programme_id ' +
+      'WHERE a.university_id=?', [uniId]);
     const [[sl]] = await p.query('SELECT COUNT(*) AS n FROM shortlists WHERE university_id=?', [uniId]);
     const [[rt]] = await p.query('SELECT AVG(stars) AS avg, COUNT(*) AS n FROM ratings WHERE university_id=?', [uniId]);
     // How many students currently have this university in their latest
@@ -586,6 +591,7 @@ module.exports = {
     const applicants = apps.map(a => ({
       name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '',
       date: a.created_at ? new Date(a.created_at).toISOString().slice(0, 10) : '',
+      combo: a.track || '', programme: a.programme_name || '', dept: a.programme_dept || '',
     }));
     const byHome = {};
     applicants.forEach(a => { const h = a.home || 'Unknown'; byHome[h] = (byHome[h] || 0) + 1; });
@@ -759,5 +765,53 @@ module.exports = {
         pct: totalStudents ? Number(((counts[u.id] || 0) / totalStudents * 100).toFixed(1)) : 0,
       })),
     };
+  },
+
+  // Which criteria mattered to students who actually applied to THIS
+  // university -- distinct from criteriaUsageCounts(uniId), which scopes by
+  // "had this uni in their latest ranked top-5" rather than "applied here".
+  // criteria_selections has no university column at all, so this is
+  // derived the same way: from each applicant's own user_last_ranking.
+  async staffCriteriaUsage(uniId) {
+    const p = await getPool();
+    const [appUsers] = await p.query('SELECT DISTINCT user_id FROM applications WHERE university_id=?', [uniId]);
+    const applicantIds = new Set(appUsers.map(r => r.user_id).filter(Boolean));
+    if (!applicantIds.size) return [];
+    const [rows] = await p.query('SELECT user_id, criteria FROM user_last_ranking');
+    const [labelRows] = await p.query('SELECT code, label FROM criteria');
+    const labelByCode = Object.fromEntries(labelRows.map(r => [r.code, r.label]));
+    const counts = {};
+    for (const row of rows) {
+      if (!applicantIds.has(row.user_id)) continue;
+      let crit = [];
+      try { crit = JSON.parse(row.criteria || '[]'); } catch { /* ignore malformed row */ }
+      for (const c of crit) {
+        const code = c && c.code;
+        if (!code) continue;
+        counts[code] = (counts[code] || 0) + 1;
+      }
+    }
+    return Object.entries(counts)
+      .map(([code, count]) => ({ code, label: labelByCode[code] || code, count }))
+      .sort((a, b) => b.count - a.count);
+  },
+
+  // A2 combinations among students who have THIS university in their
+  // latest ranked top-5 (their "reach", same membership test as
+  // rankedListCount above) -- sorted ascending per staff's explicit request,
+  // unlike every other count in this file which reads descending.
+  async staffCombosReached(uniId) {
+    const p = await getPool();
+    const [lr] = await p.query('SELECT user_id, university_ids FROM user_last_ranking');
+    const memberIds = lr.filter(r => {
+      try { return JSON.parse(r.university_ids || '[]').some(u => u.id === uniId); } catch { return false; }
+    }).map(r => r.user_id).filter(Boolean);
+    if (!memberIds.length) return [];
+    const [users] = await p.query('SELECT track FROM users WHERE id IN (?)', [memberIds]);
+    const counts = {};
+    users.forEach(u => { const t = u.track || 'Unknown'; counts[t] = (counts[t] || 0) + 1; });
+    return Object.entries(counts)
+      .map(([combo, count]) => ({ combo, count }))
+      .sort((a, b) => a.count - b.count);
   },
 };

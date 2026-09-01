@@ -310,9 +310,13 @@ module.exports = {
       .filter(row => (row.ranked || []).some(u => u.id === uniId)).length;
     const applicants = apps.map(a => {
       const u = db.users.find(x => x.id === a.userId);
+      const prog = db.programmes.find(p => p.id === a.programmeId);
       return {
         name: u ? u.name : 'A2 graduate', email: u ? u.email : '', home: a.homeArea || (u && u.home) || '',
         date: (a.createdAt || '').slice(0, 10),
+        // Blank rather than fabricated when a legacy application predates
+        // the programme/track being recorded, or the student never set a combo.
+        combo: (u && u.track) || '', programme: prog ? prog.name : '', dept: prog ? prog.dept : '',
       };
     });
     const byHome = {};
@@ -480,6 +484,49 @@ module.exports = {
     };
   },
 
+  // Which criteria mattered to students who actually applied to THIS
+  // university -- distinct from criteriaUsageCounts(uniId), which scopes by
+  // "had this uni in their latest ranked top-5" rather than "applied here".
+  // criteriaSelections has no university tag at all, so this is derived the
+  // same way: from each applicant's own userLastRanking entry.
+  async staffCriteriaUsage(uniId) {
+    const applicantIds = new Set(db.applications.filter(a => a.universityId === uniId).map(a => a.userId));
+    if (!applicantIds.size) return [];
+    const byCode = Object.fromEntries((db.criteria || []).map(c => [c.code, c]));
+    const counts = {};
+    for (const [userId, row] of Object.entries(db.userLastRanking || {})) {
+      if (!applicantIds.has(userId)) continue;
+      for (const c of row.criteria || []) {
+        const code = c && c.code;
+        if (!code) continue;
+        counts[code] = (counts[code] || 0) + 1;
+      }
+    }
+    return Object.entries(counts)
+      .map(([code, count]) => ({ code, label: byCode[code]?.label || code, count }))
+      .sort((a, b) => b.count - a.count);
+  },
+
+  // A2 combinations among students who have THIS university in their
+  // latest ranked top-5 (their "reach", same membership test as
+  // rankedListCount above) -- sorted ascending per staff's explicit request,
+  // unlike every other count in this file which reads descending.
+  async staffCombosReached(uniId) {
+    const memberIds = Object.entries(db.userLastRanking || {})
+      .filter(([, row]) => (row.ranked || []).some(u => u.id === uniId))
+      .map(([userId]) => userId);
+    if (!memberIds.length) return [];
+    const counts = {};
+    for (const userId of memberIds) {
+      const u = db.users.find(x => x.id === userId);
+      const t = (u && u.track) || 'Unknown';
+      counts[t] = (counts[t] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .map(([combo, count]) => ({ combo, count }))
+      .sort((a, b) => a.count - b.count);
+  },
+
   // ---- admin: universities CRUD ----
   async addUniversity({ abbr, name, sector }) {
     const u = { id: uid('uni'), abbr, name, sector: sector || 'Gasabo Campus',
@@ -592,10 +639,14 @@ module.exports = {
     return db.users.filter(u => u.role === 'student')
       .map(u => ({ id: u.id, name: u.name, email: u.email, home: u.home || '', suspended: !!u.suspended }));
   },
-  async setStudentSuspended(id, suspended) {
+  async setStudentSuspended(id, suspended, reason) {
     const u = db.users.find(x => x.id === id);
     if (!u) throw new Error('Student not found');
-    u.suspended = !!suspended; save();
+    u.suspended = !!suspended;
+    // Restoring always clears the reason -- it only ever describes the
+    // CURRENT suspension, never a stale one from a previous incident.
+    u.suspendReason = u.suspended ? (reason || null) : null;
+    save();
     return { id: u.id, suspended: u.suspended };
   },
   async deleteStudent(id) {

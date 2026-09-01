@@ -419,6 +419,10 @@ class Api {
       _put('/staff/$uniId/criteria', {'criteria': criteria});
   static Future<Map<String, dynamic>> staffReport(String uniId) async =>
       Map<String, dynamic>.from(await _get('/staff/$uniId/report'));
+  static Future<List<dynamic>> staffCriteriaUsage(String uniId) async =>
+      await _get('/staff/$uniId/criteria-usage') as List<dynamic>;
+  static Future<List<dynamic>> staffCombosReached(String uniId) async =>
+      await _get('/staff/$uniId/combos-reached') as List<dynamic>;
   static Future<void> updateUniversityPhoto(String uniId, String? photo) =>
       _put('/staff/$uniId/photo', {'photo': photo});
   static Future<Map<String, dynamic>> adminReport() async =>
@@ -458,8 +462,8 @@ class Api {
   // ---- admin: students ----
   static Future<List<dynamic>> adminStudents() async =>
       await _get('/admin/students') as List<dynamic>;
-  static Future<void> setStudentSuspended(String id, bool suspended) =>
-      _post('/admin/students/$id/suspended', {'suspended': suspended});
+  static Future<void> setStudentSuspended(String id, bool suspended, {String? reason}) =>
+      _post('/admin/students/$id/suspended', {'suspended': suspended, if (reason != null) 'reason': reason});
 }
 
 class ApiError implements Exception {
@@ -489,6 +493,10 @@ class Session {
   static double? budgetMin;
   static double? budgetMax;
   static String? photo;
+  // A suspended graduate is still let in -- the home screen locks its own
+  // links and shows this comment instead of blocking login outright.
+  static bool suspended = false;
+  static String? suspendReason;
 
   static String get initial => name.isEmpty ? 'U' : name.trim()[0].toUpperCase();
   static String get first => name.isEmpty ? '' : name.split(' ').first;
@@ -581,6 +589,7 @@ Future<void> _logout(BuildContext context) async {
   Session.homeLat = null; Session.homeLng = null; Session.selectedDept = null;
   Session.budgetMin = null; Session.budgetMax = null; Session.preferredReligion = null;
   Session.photo = null;
+  Session.suspended = false; Session.suspendReason = null;
   _bumpAvatar();
   Navigator.pushAndRemoveUntil(
       context, MaterialPageRoute(builder: (_) => const OnboardingScreen()), (r) => false);
@@ -1025,6 +1034,8 @@ class _LoginScreenState extends State<LoginScreen> {
       Session.homeArea = user['homeArea'] ?? '';
       Session.homeLat = (user['homeLat'] as num?)?.toDouble();
       Session.homeLng = (user['homeLng'] as num?)?.toDouble();
+      Session.suspended = user['suspended'] == true;
+      Session.suspendReason = user['suspendReason'];
       _bumpAvatar();
       if (!mounted) return;
       _routeByRole(context, Session.role);
@@ -1640,104 +1651,141 @@ class _StudentHomeState extends State<StudentHome> {
                 profileAction(context),
               ]),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-              child: Container(
-                padding: const EdgeInsets.all(22),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(22),
-                  gradient: const LinearGradient(
-                      begin: Alignment.topLeft, end: Alignment.bottomRight,
-                      colors: [C.green, Color(0xFF164638)]),
+            if (Session.suspended)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFFDEEE3),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFC25A1F))),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Icon(Icons.warning_amber_rounded, color: Color(0xFFC25A1F), size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Your account is suspended',
+                          style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFC25A1F))),
+                      const SizedBox(height: 4),
+                      Text(
+                          (Session.suspendReason ?? '').isNotEmpty
+                              ? Session.suspendReason!
+                              : 'Contact the administrator for details.',
+                          style: const TextStyle(color: C.ink, fontSize: 12.5, height: 1.4)),
+                    ])),
+                  ]),
                 ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('YOUR RECOMMENDATION', style: TextStyle(
-                      fontSize: 10.5, fontWeight: FontWeight.w600, letterSpacing: 1.2, color: C.gold)),
-                  const SizedBox(height: 8),
-                  Text('Ready to find your best-fit university?',
-                      style: head(24, color: const Color(0xFFFBF8F3))),
-                  const SizedBox(height: 6),
-                  const Text('Pick your criteria — we\'ll rank all Gasabo universities.',
-                      style: TextStyle(fontSize: 12.5, color: Color(0xFFCDE3DA), height: 1.5)),
-                  const SizedBox(height: 16),
-                  GestureDetector(
-                    onTap: _toDept,
+              ),
+            // A suspended graduate can still log in, but every link below is
+            // locked -- dimmed and unresponsive -- until an admin restores
+            // the account. The banner above is the only thing that stays
+            // interactive-looking (it's read-only anyway).
+            IgnorePointer(
+              ignoring: Session.suspended,
+              child: Opacity(
+                opacity: Session.suspended ? 0.4 : 1,
+                child: Column(children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
                     child: Container(
-                      height: 42, padding: const EdgeInsets.symmetric(horizontal: 18),
-                      decoration: BoxDecoration(color: C.gold, borderRadius: BorderRadius.circular(999)),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        const Text('Start matching', style: TextStyle(
-                            color: C.green, fontWeight: FontWeight.w600, fontSize: 13.5)),
-                        const SizedBox(width: 8),
-                        const Icon(Icons.arrow_forward, color: C.green, size: 16),
+                      padding: const EdgeInsets.all(22),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(22),
+                        gradient: const LinearGradient(
+                            begin: Alignment.topLeft, end: Alignment.bottomRight,
+                            colors: [C.green, Color(0xFF164638)]),
+                      ),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Text('YOUR RECOMMENDATION', style: TextStyle(
+                            fontSize: 10.5, fontWeight: FontWeight.w600, letterSpacing: 1.2, color: C.gold)),
+                        const SizedBox(height: 8),
+                        Text('Ready to find your best-fit university?',
+                            style: head(24, color: const Color(0xFFFBF8F3))),
+                        const SizedBox(height: 6),
+                        const Text('Pick your criteria — we\'ll rank all Gasabo universities.',
+                            style: TextStyle(fontSize: 12.5, color: Color(0xFFCDE3DA), height: 1.5)),
+                        const SizedBox(height: 16),
+                        GestureDetector(
+                          onTap: _toDept,
+                          child: Container(
+                            height: 42, padding: const EdgeInsets.symmetric(horizontal: 18),
+                            decoration: BoxDecoration(color: C.gold, borderRadius: BorderRadius.circular(999)),
+                            child: Row(mainAxisSize: MainAxisSize.min, children: [
+                              const Text('Start matching', style: TextStyle(
+                                  color: C.green, fontWeight: FontWeight.w600, fontSize: 13.5)),
+                              const SizedBox(width: 8),
+                              const Icon(Icons.arrow_forward, color: C.green, size: 16),
+                            ]),
+                          ),
+                        ),
                       ]),
                     ),
                   ),
-                ]),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-              child: Text('Quick actions', style: head(17, weight: FontWeight.w500)),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-              child: GridView.count(
-                crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.55,
-                children: [
-                  _action('Set criteria', '23 criteria',
-                      Icons.tune, const Color(0xFFC7EBD8), C.green, _toDept),
-                  _action('Shortlist', 'Saved', Icons.bookmark_border, const Color(0xFFF7D9C4), const Color(0xFFC25A1F),
-                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortlistScreen()))),
-                  _action('Compare', 'Side-by-side', Icons.view_column_outlined, const Color(0xFFFBEAB4), const Color(0xFFB48412),
-                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CompareScreen()))),
-                  _action('My rankings', 'Latest match', Icons.bar_chart, const Color(0xFFD8E6F2), const Color(0xFF2A5C8F),
-                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RankingsEntryScreen()))),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 10),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text('Explore Gasabo', style: head(17, weight: FontWeight.w500)),
-                GestureDetector(
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AllUniversitiesA2Screen())),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: const [
-                    Text('See all', style: TextStyle(color: C.green, fontWeight: FontWeight.w600, fontSize: 13)),
-                    SizedBox(width: 4),
-                    Icon(Icons.arrow_forward, color: C.green, size: 14),
-                  ]),
-                ),
-              ]),
-            ),
-            SizedBox(
-              height: 132,
-              child: ListView(
-                controller: _marqueeCtrl,
-                scrollDirection: Axis.horizontal,
-                physics: unis.isEmpty ? const NeverScrollableScrollPhysics() : const ClampingScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                children: [...unis, ...unis].map((u) {
-                  final m = u as Map;
-                  return GestureDetector(
-                    onTap: () => Navigator.push(context, MaterialPageRoute(
-                        builder: (_) => DetailScreen(id: m['id'], name: m['name']))),
-                    child: Container(
-                      width: 150,
-                      margin: const EdgeInsets.only(right: 10),
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                          color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: C.border)),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        universityLogo(m, size: 40, radius: 11, fontSize: 11),
-                        const SizedBox(height: 10),
-                        Text(m['name'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.ink, height: 1.2)),
-                      ]),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                    child: Text('Quick actions', style: head(17, weight: FontWeight.w500)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                    child: GridView.count(
+                      crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+                      mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.55,
+                      children: [
+                        _action('Set criteria', '23 criteria',
+                            Icons.tune, const Color(0xFFC7EBD8), C.green, _toDept),
+                        _action('Shortlist', 'Saved', Icons.bookmark_border, const Color(0xFFF7D9C4), const Color(0xFFC25A1F),
+                            () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortlistScreen()))),
+                        _action('Compare', 'Side-by-side', Icons.view_column_outlined, const Color(0xFFFBEAB4), const Color(0xFFB48412),
+                            () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CompareScreen()))),
+                        _action('My rankings', 'Latest match', Icons.bar_chart, const Color(0xFFD8E6F2), const Color(0xFF2A5C8F),
+                            () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RankingsEntryScreen()))),
+                      ],
                     ),
-                  );
-                }).toList(),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 10),
+                    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      Text('Explore Gasabo', style: head(17, weight: FontWeight.w500)),
+                      GestureDetector(
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AllUniversitiesA2Screen())),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: const [
+                          Text('See all', style: TextStyle(color: C.green, fontWeight: FontWeight.w600, fontSize: 13)),
+                          SizedBox(width: 4),
+                          Icon(Icons.arrow_forward, color: C.green, size: 14),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                  SizedBox(
+                    height: 132,
+                    child: ListView(
+                      controller: _marqueeCtrl,
+                      scrollDirection: Axis.horizontal,
+                      physics: unis.isEmpty ? const NeverScrollableScrollPhysics() : const ClampingScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      children: [...unis, ...unis].map((u) {
+                        final m = u as Map;
+                        return GestureDetector(
+                          onTap: () => Navigator.push(context, MaterialPageRoute(
+                              builder: (_) => DetailScreen(id: m['id'], name: m['name']))),
+                          child: Container(
+                            width: 150,
+                            margin: const EdgeInsets.only(right: 10),
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                                color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: C.border)),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              universityLogo(m, size: 40, radius: 11, fontSize: 11),
+                              const SizedBox(height: 10),
+                              Text(m['name'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.ink, height: 1.2)),
+                            ]),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ]),
               ),
             ),
             const SizedBox(height: 24),
@@ -2936,6 +2984,22 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
   }
 }
 
+// Graduate-facing wording only -- the real label (used everywhere else:
+// admin, staff, reports, and the criteria payload sent to /rank, which
+// doesn't even include label) is untouched. Falls back to the real label
+// for every code not listed here.
+const _kSimpleCriteriaLabels = {
+  'C02': 'Scholarships availability',
+  'C05': 'Class size',
+  'C06': 'Completion rate',
+  'C09': 'Easy access to public transport',
+  'C13': 'Job & career help',
+  'C19': 'Academic reputation',
+  'C23': 'Entry grade',
+  'C25': 'Religion or culture',
+};
+String _simpleCriterionLabel(Map c) => _kSimpleCriteriaLabels['${c['code']}'] ?? '${c['label']}';
+
 class CriteriaScreen extends StatefulWidget {
   const CriteriaScreen({super.key});
   @override
@@ -2994,7 +3058,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
     final categories = <String>[];
     final byCategory = <String, List<Map<String, dynamic>>>{};
     for (final c in visible) {
-      if (query.isNotEmpty && !'${c['label']}'.toLowerCase().contains(query)) continue;
+      if (query.isNotEmpty && !_simpleCriterionLabel(c).toLowerCase().contains(query)) continue;
       final cat = ((c['category'] as String?)?.trim().isNotEmpty ?? false) ? c['category'] as String : 'General';
       byCategory.putIfAbsent(cat, () { categories.add(cat); return []; }).add(c);
     }
@@ -3104,21 +3168,24 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                       Expanded(child: Text(cat.toUpperCase(), style: TextStyle(
                                           fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor))),
                                       if (isOpen)
-                                        GestureDetector(
-                                          onTap: () => setState(() {
-                                            final codes = items.map((c) => c['code'] as String);
-                                            if (selCount == items.length) {
-                                              selected.removeAll(codes);
-                                            } else {
-                                              selected.addAll(codes);
-                                            }
-                                          }),
-                                          child: Padding(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                            child: Text(selCount == items.length ? 'Deselect all' : 'Select all',
-                                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: catColor)),
+                                        SizedBox(
+                                          width: 22, height: 22,
+                                          child: Checkbox(
+                                            value: selCount == items.length,
+                                            activeColor: catColor,
+                                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                            visualDensity: VisualDensity.compact,
+                                            onChanged: (v) => setState(() {
+                                              final codes = items.map((c) => c['code'] as String);
+                                              if (v == true) {
+                                                selected.addAll(codes);
+                                              } else {
+                                                selected.removeAll(codes);
+                                              }
+                                            }),
                                           ),
                                         ),
+                                      if (isOpen) const SizedBox(width: 6),
                                       Text('$selCount/${items.length}', style: const TextStyle(
                                           fontFamily: 'monospace', fontSize: 10, color: C.muted)),
                                     ]),
@@ -3148,7 +3215,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                           child: sel ? const Icon(Icons.check, size: 14, color: C.green) : null,
                                         ),
                                         const SizedBox(width: 12),
-                                        Expanded(child: Text('${c['label']}', style: TextStyle(
+                                        Expanded(child: Text(_simpleCriterionLabel(c), style: TextStyle(
                                             color: sel ? Colors.white : C.ink, fontWeight: FontWeight.w600, fontSize: 12.5))),
                                         Text(c['direction'] == 'cost' ? 'lower' : 'higher', style: TextStyle(
                                             color: sel ? const Color(0xFFCDE3DA) : C.muted, fontSize: 10, fontFamily: 'monospace')),
@@ -3217,24 +3284,33 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
             decoration: const BoxDecoration(border: Border(top: BorderSide(color: C.border))),
             child: Row(children: [
-              OutlinedButton(
-                onPressed: () => setState(() => selected.clear()),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: C.ink, side: const BorderSide(color: C.border),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-                ),
-                child: const Text('Reset'),
-              ),
-              const SizedBox(width: 10),
-              OutlinedButton(
-                onPressed: () => setState(() => selected.addAll(visible.map((c) => c['code'] as String))),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: C.green, side: const BorderSide(color: C.green),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-                ),
-                child: const Text('Select all'),
+              // Checked = every currently-visible criterion is selected.
+              // Checking it selects all of them; unchecking clears the
+              // WHOLE selection outright -- that's the reset, there's no
+              // separate Reset button anymore.
+              GestureDetector(
+                onTap: () => setState(() {
+                  final allVisibleSelected = visible.isNotEmpty && visible.every((c) => selected.contains(c['code']));
+                  if (allVisibleSelected) {
+                    selected.clear();
+                  } else {
+                    selected.addAll(visible.map((c) => c['code'] as String));
+                  }
+                }),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Checkbox(
+                    value: visible.isNotEmpty && visible.every((c) => selected.contains(c['code'])),
+                    activeColor: C.green,
+                    onChanged: (v) => setState(() {
+                      if (v == true) {
+                        selected.addAll(visible.map((c) => c['code'] as String));
+                      } else {
+                        selected.clear();
+                      }
+                    }),
+                  ),
+                  const Text('Select all', style: TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
+                ]),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -3320,7 +3396,12 @@ class _LocationScreenState extends State<LocationScreen> {
   Future<void> _useCurrentLocation() async {
     setState(() => locating = true);
     try {
-      if (!await Geolocator.isLocationServiceEnabled()) {
+      // geolocator_web has no implementation of isLocationServiceEnabled()
+      // at all (browsers have no such concept, separate from permission) --
+      // calling it there always throws MissingPluginException, so this
+      // check is skipped on web and permission/position calls (which ARE
+      // implemented on web, via the browser's own prompt) run directly.
+      if (!kIsWeb && !await Geolocator.isLocationServiceEnabled()) {
         if (mounted) toast(context, 'Turn on location services to use this.');
         return;
       }
@@ -4210,7 +4291,6 @@ class _DetailScreenState extends State<DetailScreen> {
                         setState(() => myRating = i + 1);
                         try {
                           await Api.rate(widget.id, i + 1);
-                          if (mounted) toast(context, 'Thanks for rating!');
                         } catch (e) {
                           if (mounted) toast(context, e.toString());
                         }
@@ -4233,7 +4313,6 @@ class _DetailScreenState extends State<DetailScreen> {
                         programmeId = '${match['id'] ?? ''}';
                       }
                       await Api.apply(widget.id, programmeId, Session.homeArea);
-                      if (mounted) toast(context, 'Application submitted!');
                       final url = kApplyUrls[widget.id];
                       if (url != null) {
                         await launchUrl(Uri.parse(url),
@@ -4251,7 +4330,6 @@ class _DetailScreenState extends State<DetailScreen> {
                     onPressed: () async {
                       try {
                         await Api.shortlist(widget.id);
-                        if (mounted) toast(context, 'Added to shortlist');
                       } catch (e) {
                         if (mounted) toast(context, e.toString());
                       }
@@ -4469,11 +4547,11 @@ class _StaffDashboardState extends State<StaffDashboard> {
                 _card(context, 'Campuses & programmes', 'Add campuses, departments and programmes',
                     Icons.apartment, const StaffCampusesScreen(), onReturn: _load),
                 _card(context, 'Eligible combinations', 'Principal-pass combos per programme',
-                    Icons.rule, const StaffCombosScreen(), onReturn: _load),
+                    Icons.rule, const StaffCombosScreen(), onReturn: _load, accent: const Color(0xFF2A5C8F)),
                 _card(context, 'Criteria answers', 'Fill in your $criteriaCount data points',
-                    Icons.fact_check_outlined, const StaffCriteriaScreen(), onReturn: _load),
+                    Icons.fact_check_outlined, const StaffCriteriaScreen(), onReturn: _load, accent: const Color(0xFFB48412)),
                 _card(context, 'Reports', 'Reach, applicants & locations · CSV',
-                    Icons.bar_chart, const StaffReportsScreen()),
+                    Icons.bar_chart, const StaffReportsScreen(), accent: const Color(0xFF7A2F4A)),
               ],
             ),
           ),
@@ -4482,7 +4560,9 @@ class _StaffDashboardState extends State<StaffDashboard> {
     );
   }
 
-  Widget _card(BuildContext ctx, String t, String s, IconData i, Widget dest, {VoidCallback? onReturn}) => GestureDetector(
+  // `accent`, when given, recolors only the icon + its background tint --
+  // per explicit correction, the title/subtitle text stay untouched.
+  Widget _card(BuildContext ctx, String t, String s, IconData i, Widget dest, {VoidCallback? onReturn, Color? accent}) => GestureDetector(
         onTap: () => Navigator.push(ctx, MaterialPageRoute(builder: (_) => dest)).then((_) => onReturn?.call()),
         child: Container(
           margin: const EdgeInsets.only(bottom: 10),
@@ -4491,8 +4571,9 @@ class _StaffDashboardState extends State<StaffDashboard> {
               color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
           child: Row(children: [
             Container(width: 40, height: 40,
-                decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(12)),
-                child: Icon(i, color: C.green, size: 20)),
+                decoration: BoxDecoration(
+                    color: accent != null ? accent.withValues(alpha: 0.12) : C.sand, borderRadius: BorderRadius.circular(12)),
+                child: Icon(i, color: accent ?? C.green, size: 20)),
             const SizedBox(width: 14),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(t, style: const TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
@@ -6194,15 +6275,38 @@ class StaffReportsScreen extends StatefulWidget {
 
 class _StaffReportsScreenState extends State<StaffReportsScreen> {
   late Future<Map<String, dynamic>> _future;
+  String reportType = 'Applicants';
+  // Fetched on-demand the first time their report type is picked, then
+  // cached for the rest of this screen's lifetime.
+  List<dynamic>? criteriaUsage;
+  List<dynamic>? combosReached;
+  bool loadingExtra = false;
   // Null = no filter (all-time, including legacy undated applications).
   // Once either is set, undated rows are excluded rather than guessed in.
+  // Only "Applicants" uses these -- every other report just downloads all.
   DateTime? from;
   DateTime? to;
+
+  static const _types = ['Applicants', 'Reach by home area', 'Most-chosen criteria', 'Combos reached on the lists'];
 
   @override
   void initState() {
     super.initState();
     _future = Api.staffReport(_staffUni);
+  }
+
+  void _loadExtra(String type) {
+    if (type == 'Most-chosen criteria' && criteriaUsage == null) {
+      setState(() => loadingExtra = true);
+      Api.staffCriteriaUsage(_staffUni).then((v) {
+        if (mounted) setState(() { criteriaUsage = v; loadingExtra = false; });
+      }).catchError((_) { if (mounted) setState(() => loadingExtra = false); });
+    } else if (type == 'Combos reached on the lists' && combosReached == null) {
+      setState(() => loadingExtra = true);
+      Api.staffCombosReached(_staffUni).then((v) {
+        if (mounted) setState(() { combosReached = v; loadingExtra = false; });
+      }).catchError((_) { if (mounted) setState(() => loadingExtra = false); });
+    }
   }
 
   String _fmtDate(DateTime? d) => d == null
@@ -6232,16 +6336,39 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
     final filtered = apps.where((a) => _inRange('${a['date'] ?? ''}')).toList();
     csv_download.downloadCsv('applicants.csv', _toCsv(
         ['Name', 'Email', 'Home area', 'Date'],
-        filtered.map((a) => [a['name'], a['email'], a['home'], a['date']]).toList()));
+        filtered.map((a) => [_titleCase('${a['name'] ?? ''}'), a['email'], a['home'], a['date']]).toList()));
     if (mounted) toast(context, 'Downloading applicants.csv (${filtered.length} rows)');
   }
 
-  void _downloadHomeAreas(List areas) {
-    csv_download.downloadCsv('reach-by-area.csv', _toCsv(
-        ['Home area', 'Applicants'],
-        areas.map((a) => [a['home'], a['count']]).toList()));
-    if (mounted) toast(context, 'Downloading reach-by-area.csv (${areas.length} rows)');
+  void _downloadReachByHomeArea(List apps) {
+    csv_download.downloadCsv('reach-by-home-area.csv', _toCsv(
+        ['Name', 'Combo', 'Department & Programme', 'Home address'],
+        apps.map((a) => [
+              _titleCase('${a['name'] ?? ''}'),
+              a['combo'] ?? '',
+              _deptProgLine(a),
+              a['home'],
+            ]).toList()));
+    if (mounted) toast(context, 'Downloading reach-by-home-area.csv (${apps.length} rows)');
   }
+
+  void _downloadCriteriaUsage(List usage) {
+    csv_download.downloadCsv('most-chosen-criteria.csv', _toCsv(
+        ['Criterion', 'Code', 'Count'],
+        usage.map((c) => [c['label'], c['code'], c['count']]).toList()));
+    if (mounted) toast(context, 'Downloading most-chosen-criteria.csv (${usage.length} rows)');
+  }
+
+  void _downloadCombosReached(List combos) {
+    csv_download.downloadCsv('combos-reached.csv', _toCsv(
+        ['Combination', 'Count'],
+        combos.map((c) => [c['combo'], c['count']]).toList()));
+    if (mounted) toast(context, 'Downloading combos-reached.csv (${combos.length} rows)');
+  }
+
+  String _deptProgLine(Map a) => [a['dept'], a['programme']]
+      .where((s) => (s ?? '').toString().trim().isNotEmpty)
+      .join(' — ');
 
   @override
   Widget build(BuildContext context) {
@@ -6257,7 +6384,6 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
           if (snap.hasError) return _errorView(snap.error.toString());
           final r = snap.data ?? {};
           final apps = (r['applicants'] as List?) ?? [];
-          final areas = (r['homeAreas'] as List?) ?? [];
           final avgRating = (r['avgRating'] as num?)?.toDouble();
           final ratingCount = (r['ratingCount'] as num?)?.toInt() ?? 0;
           return ListView(
@@ -6276,65 +6402,166 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
                     ratingCount > 0 ? '$ratingCount rating${ratingCount == 1 ? '' : 's'}' : 'No ratings yet', C.gold)),
               ]),
               const SizedBox(height: 20),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                const Text('Applicants', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
-                TextButton.icon(
-                  onPressed: apps.isEmpty ? null : () => _downloadApplicants(apps),
-                  icon: const Icon(Icons.download, size: 16, color: C.green),
-                  label: const Text('CSV', style: TextStyle(color: C.green)),
-                ),
-              ]),
-              const SizedBox(height: 10),
-              Row(children: [
-                Expanded(child: _dateField(_fmtDate(from), () => _pickDate(true))),
-                const SizedBox(width: 10),
-                Expanded(child: _dateField(_fmtDate(to), () => _pickDate(false))),
-                if (from != null || to != null) ...[
-                  const SizedBox(width: 4),
-                  IconButton(
-                    onPressed: () => setState(() { from = null; to = null; }),
-                    icon: const Icon(Icons.close, size: 18, color: C.muted),
-                    tooltip: 'Clear dates',
-                  ),
-                ],
-              ]),
-              const SizedBox(height: 4),
-              const Text('The date range applies to the CSV download above.',
-                  style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
-              const SizedBox(height: 12),
-              if (apps.isEmpty)
-                const Text('No applicants yet.', style: TextStyle(color: C.muted))
-              else
-                _growthCard((r['applyLast7'] as num?)?.toInt() ?? 0, (r['applyPrev7'] as num?)?.toInt() ?? 0),
+              _lbl('REPORT TYPE'),
+              _dropdown(reportType, _types, (v) {
+                setState(() => reportType = v!);
+                _loadExtra(v!);
+              }),
+              const SizedBox(height: 14),
+              // Only "Applicants" has a meaningful date to filter by --
+              // every other report is a point-in-time tally, so it's just
+              // "download all" with no date UI, per your instruction.
+              if (reportType == 'Applicants') ...[
+                Row(children: [
+                  Expanded(child: _dateField(_fmtDate(from), () => _pickDate(true))),
+                  const SizedBox(width: 10),
+                  Expanded(child: _dateField(_fmtDate(to), () => _pickDate(false))),
+                  if (from != null || to != null) ...[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      onPressed: () => setState(() { from = null; to = null; }),
+                      icon: const Icon(Icons.close, size: 18, color: C.muted),
+                      tooltip: 'Clear dates',
+                    ),
+                  ],
+                ]),
+                const SizedBox(height: 4),
+                const Text('The date range applies to the CSV download below.',
+                    style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
+                const SizedBox(height: 14),
+              ],
+              _downloadButton(reportType, apps),
               const SizedBox(height: 20),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                const Text('Reach by home area', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
-                TextButton.icon(
-                  onPressed: areas.isEmpty ? null : () => _downloadHomeAreas(areas),
-                  icon: const Icon(Icons.download, size: 16, color: C.green),
-                  label: const Text('CSV', style: TextStyle(color: C.green)),
-                ),
-              ]),
-              const SizedBox(height: 6),
-              if (areas.isEmpty)
-                const Text('No applicant home areas yet.', style: TextStyle(color: C.muted))
+              Text(reportType, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: C.ink)),
+              const SizedBox(height: 10),
+              if (reportType == 'Applicants')
+                apps.isEmpty
+                    ? const Text('No applicants yet.', style: TextStyle(color: C.muted))
+                    : _growthCard((r['applyLast7'] as num?)?.toInt() ?? 0, (r['applyPrev7'] as num?)?.toInt() ?? 0)
+              else if (reportType == 'Reach by home area')
+                apps.isEmpty
+                    ? const Text('No applicants yet.', style: TextStyle(color: C.muted))
+                    : Column(children: apps.map<Widget>((a) => _reachRow(a as Map)).toList())
+              else if (reportType == 'Most-chosen criteria')
+                _extraList(criteriaUsage, 'No applicants have ranked yet.',
+                    (c) => '${c['label']}', (c) => (c['count'] as num).toInt())
               else
-                ...areas.map((a) => Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      decoration: BoxDecoration(
-                          color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                      child: Row(children: [
-                        Expanded(child: Text('${a['home']}', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink, fontSize: 13))),
-                        Text('${a['count']}', style: const TextStyle(color: C.green, fontWeight: FontWeight.w700)),
-                      ]),
-                    )),
+                _extraList(combosReached, 'No students have you in their ranked list yet.',
+                    (c) => '${c['combo']}', (c) => (c['count'] as num).toInt()),
             ],
           );
         },
       ),
     );
   }
+
+  Widget _downloadButton(String type, List apps) {
+    String label = 'Download all (CSV)';
+    VoidCallback? onPressed;
+    switch (type) {
+      case 'Applicants':
+        label = 'Download applicants (CSV)';
+        onPressed = apps.isEmpty ? null : () => _downloadApplicants(apps);
+        break;
+      case 'Reach by home area':
+        onPressed = apps.isEmpty ? null : () => _downloadReachByHomeArea(apps);
+        break;
+      case 'Most-chosen criteria':
+        onPressed = (criteriaUsage?.isNotEmpty ?? false) ? () => _downloadCriteriaUsage(criteriaUsage!) : null;
+        break;
+      default:
+        onPressed = (combosReached?.isNotEmpty ?? false) ? () => _downloadCombosReached(combosReached!) : null;
+    }
+    return GestureDetector(
+      onTap: onPressed,
+      child: Opacity(
+        opacity: onPressed == null ? 0.45 : 1,
+        child: Container(
+          height: 54, alignment: Alignment.center,
+          decoration: BoxDecoration(color: C.green, borderRadius: BorderRadius.circular(14)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.download, color: C.gold, size: 18),
+            const SizedBox(width: 10),
+            Text(label, style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700, fontSize: 14)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _reachRow(Map a) {
+    final progLine = _deptProgLine(a);
+    final subtitle = [
+      if ((a['combo'] ?? '').toString().trim().isNotEmpty) '${a['combo']}',
+      if (progLine.isNotEmpty) progLine,
+      if ((a['home'] ?? '').toString().trim().isNotEmpty) '${a['home']}',
+    ].join(' · ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(_titleCase('${a['name'] ?? ''}'), style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
+        if (subtitle.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          Text(subtitle, style: const TextStyle(color: C.muted, fontSize: 11)),
+        ],
+      ]),
+    );
+  }
+
+  /// Shared bar-list rendering for "Most-chosen criteria" and "Combos
+  /// reached" -- both are just {label, count} tallies fetched on-demand.
+  Widget _extraList(List<dynamic>? data, String emptyMsg, String Function(Map) label, int Function(Map) count) {
+    if (loadingExtra) {
+      return const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: C.green)));
+    }
+    final list = data ?? [];
+    if (list.isEmpty) return Text(emptyMsg, style: const TextStyle(color: C.muted));
+    final maxN = list.map((c) => count(c as Map)).fold(1, (a, b) => a > b ? a : b);
+    return Column(children: list.map<Widget>((c) {
+      final m = c as Map;
+      final n = count(m);
+      return Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+        child: Row(children: [
+          Expanded(child: Text(label(m), style: const TextStyle(color: C.ink, fontSize: 13, fontWeight: FontWeight.w600))),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 70,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                  value: n / maxN, minHeight: 7, backgroundColor: C.sand,
+                  valueColor: const AlwaysStoppedAnimation(C.green)),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text('$n', style: const TextStyle(color: C.muted, fontWeight: FontWeight.w700)),
+        ]),
+      );
+    }).toList());
+  }
+
+  Widget _lbl(String t) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text(t, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: C.green, letterSpacing: 0.5)),
+      );
+
+  Widget _dropdown(String value, List<String> items, ValueChanged<String?>? onChanged) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: value, isExpanded: true,
+            icon: const Icon(Icons.keyboard_arrow_down, color: C.muted),
+            items: items.map((s) => DropdownMenuItem(value: s, child: Text(s, overflow: TextOverflow.ellipsis))).toList(),
+            onChanged: onChanged,
+          ),
+        ),
+      );
 
   Widget _stat(String value, String label, Color color) => Container(
         padding: const EdgeInsets.all(16),
@@ -7476,6 +7703,40 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
 
   void _reload() => setState(() { _future = Api.adminStudents(); });
 
+  /// A comment is required before a suspension takes effect -- returns it,
+  /// or null if the admin backed out.
+  Future<String?> _promptSuspendReason(String name) {
+    final ctl = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setDialogState) {
+        final text = ctl.text.trim();
+        return AlertDialog(
+          title: Text('Suspend $name'),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('This graduate will still be able to log in, but their home screen will be locked '
+                'and this comment shown to them.', style: TextStyle(color: C.muted, fontSize: 12.5, height: 1.4)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctl,
+              autofocus: true,
+              maxLines: 3,
+              decoration: fieldDeco('Reason for suspension…'),
+              onChanged: (_) => setDialogState(() {}),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            TextButton(
+              onPressed: text.isEmpty ? null : () => Navigator.pop(ctx, text),
+              child: const Text('Suspend', style: TextStyle(color: Color(0xFFC25A1F))),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -7540,7 +7801,13 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                     TextButton(
                       onPressed: () async {
                         try {
-                          await Api.setStudentSuspended(m['id'], !suspended);
+                          if (suspended) {
+                            await Api.setStudentSuspended(m['id'], false);
+                          } else {
+                            final reason = await _promptSuspendReason(_titleCase('${m['name'] ?? ''}'));
+                            if (reason == null) return; // cancelled
+                            await Api.setStudentSuspended(m['id'], true, reason: reason);
+                          }
                           _reload();
                         } catch (e) {
                           if (mounted) toast(context, e.toString());
@@ -7757,7 +8024,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                 onTap: () {
                   if (reportType == 'A2 applicants list') {
                     _downloadCsv('Applicants', ['Student', 'Email', 'University', 'Home area', 'Date'],
-                        apps.map((a) => [a['student'], a['email'], a['university'], a['home'], a['date']]).toList());
+                        apps.map((a) => [_titleCase('${a['student'] ?? ''}'), a['email'], a['university'], a['home'], a['date']]).toList());
                   } else if (reportType == 'Most-chosen criteria') {
                     _downloadCsv(reportType, ['Criterion', 'Code', 'selections'],
                         rows.map((u) => [u['name'], u['abbr'], u['n']]).toList());
@@ -7786,7 +8053,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                       padding: const EdgeInsets.all(13),
                       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text('${a['student']}', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
+                        Text(_titleCase('${a['student'] ?? ''}'), style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
                         Text('${a['university']} · ${a['home']}', style: const TextStyle(color: C.muted, fontSize: 11)),
                       ]),
                     ))

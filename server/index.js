@@ -64,7 +64,9 @@ app.post('/login', wrap(async (req, res) => {
   const { email, password } = req.body || {};
   const user = await db.findUserByEmail(email || '');
   if (!user || !(await bcrypt.compare(password || '', user.password))) throw new Error('Wrong email or password');
-  if (user.suspended) return res.status(403).json({ error: 'This account has been suspended. Contact the administrator.' });
+  // A suspended student is let in (not blocked at the door) -- the client
+  // locks their home screen and shows the admin's comment instead. Staff's
+  // separate "confirmed" gate below is a different mechanism, untouched.
 
   if (user.role === 'staff') {
     const reqs = await db.listStaffRequests();
@@ -74,7 +76,9 @@ app.post('/login', wrap(async (req, res) => {
   res.json({ token: sign(user), user: { id: user.id, name: user.name, email: user.email, role: user.role, universityId: user.universityId || null, track: user.track || null, photo: user.photo || null,
     homeArea: user.homeArea ?? user.home_area ?? null,
     homeLat: user.homeLat ?? user.home_lat ?? null,
-    homeLng: user.homeLng ?? user.home_lng ?? null } });
+    homeLng: user.homeLng ?? user.home_lng ?? null,
+    suspended: !!user.suspended,
+    suspendReason: user.suspendReason ?? user.suspend_reason ?? null } });
 }));
 
 app.put('/me', auth(), wrap(async (req, res) => {
@@ -375,6 +379,12 @@ app.delete('/staff/:uniId/programmes/:name', auth(), requireStaffOfUniversity(),
 app.get('/staff/:uniId/report', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.staffReport(req.params.uniId));
 }));
+app.get('/staff/:uniId/criteria-usage', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
+  res.json(await db.staffCriteriaUsage(req.params.uniId));
+}));
+app.get('/staff/:uniId/combos-reached', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
+  res.json(await db.staffCombosReached(req.params.uniId));
+}));
 app.put('/staff/:uniId/photo', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.updateUniversity(req.params.uniId, { photo: (req.body && req.body.photo) || null }));
 }));
@@ -436,7 +446,11 @@ app.get('/admin/students', auth(), requireRole('admin'), wrap(async (_req, res) 
   res.json(await db.listStudents());
 }));
 app.post('/admin/students/:id/suspended', auth(), requireRole('admin'), wrap(async (req, res) => {
-  res.json(await db.setStudentSuspended(req.params.id, !!(req.body && req.body.suspended)));
+  const suspended = !!(req.body && req.body.suspended);
+  if (suspended && !(req.body && req.body.reason && req.body.reason.trim())) {
+    const e = new Error('A reason is required to suspend an account.'); e.status = 400; throw e;
+  }
+  res.json(await db.setStudentSuspended(req.params.id, suspended, req.body && req.body.reason));
 }));
 app.delete('/admin/students/:id', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.deleteStudent(req.params.id));
