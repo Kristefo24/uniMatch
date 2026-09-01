@@ -1,0 +1,39 @@
+name: Deploy frontend to Netlify
+
+# Only the Flutter web app needs this — the backend (server/) auto-deploys to
+# Railway separately via its own native Git integration, untouched by this.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/deploy-netlify.yml'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build web (release)
+        working-directory: app
+        run: flutter build web --release
+
+      - name: Deploy to Netlify
+        working-directory: app
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: 8e6f32df-3bdf-47a7-befc-495d7cc2a0f3
+        run: |
+          npx --yes netlify-cli deploy --prod --dir=build/web --site="$NETLIFY_SITE_ID"

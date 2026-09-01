@@ -2836,27 +2836,25 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
   /// Chemistry+Biology). Shows only the logged-in student's own combination
   /// when it's set for this programme; otherwise falls back to every
   /// combination staff DID set.
-  Map<String, List<MapEntry<String, List<String>>>> _eligibilityByUni(String programmeName, List<Map> offerings) {
-    final out = <String, List<MapEntry<String, List<String>>>>{};
+  // Merged across every university offering this programme -- the combo
+  // itself (e.g. PCM and its principal-pass pairs) is what matters to the
+  // graduate, not which university happens to have configured it, so a code
+  // set identically at 2+ universities collapses into one entry instead of
+  // repeating per university.
+  Map<String, List<String>> _eligibilityForProgramme(String programmeName, List<Map> offerings) {
+    final out = <String, List<String>>{};
     for (final o in offerings) {
       final uniId = '${o['universityId']}';
       final raw = (uniById[uniId]?['combos'] as Map?)?[programmeName];
       if (raw is! Map) continue; // unset, or old pre-combination shape
-      final byCode = <String, List<String>>{};
       raw.forEach((k, v) {
         final subs = List<String>.from(v as List);
-        if (subjectPairs(subs).isNotEmpty) byCode['$k'] = subs;
+        if (subjectPairs(subs).isNotEmpty) out['$k'] = subs;
       });
-      if (byCode.isEmpty) continue;
-      final track = Session.track;
-      if (track == null) {
-        out[uniId] = byCode.entries.toList(); // no combination on file -- nothing to narrow to
-      } else if (byCode.containsKey(track)) {
-        out[uniId] = [MapEntry(track, byCode[track]!)];
-      }
-      // else: track is set but this university hasn't configured it -- show nothing for it.
     }
-    return out;
+    final track = Session.track;
+    if (track == null) return out; // no combination on file -- nothing to narrow to
+    return out.containsKey(track) ? {track: out[track]!} : {};
   }
 
   @override
@@ -2922,8 +2920,8 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                           final sel = selectedProgramme == name;
                           final eligible = _programmeHasMatchingOffering(offerings);
                           final eligibility = sel
-                              ? _eligibilityByUni(name, offerings)
-                              : const <String, List<MapEntry<String, List<String>>>>{};
+                              ? _eligibilityForProgramme(name, offerings)
+                              : const <String, List<String>>{};
                           return GestureDetector(
                             onTap: () {
                               if (!eligible) {
@@ -2969,17 +2967,10 @@ class _ProgrammeScreenState extends State<ProgrammeScreen> {
                                 if (sel && eligibility.isNotEmpty) ...[
                                   const SizedBox(height: 12),
                                   if (Session.track == null)
-                                    Text('Principal passes (set by each university)',
+                                    Text('Principal passes accepted',
                                         style: const TextStyle(color: C.muted, fontSize: 10.5, fontWeight: FontWeight.w600)),
                                   if (Session.track == null) const SizedBox(height: 6),
-                                  ...eligibility.entries.map((e) {
-                                    final uniName = uniNames[e.key] ?? '';
-                                    return Padding(
-                                      padding: const EdgeInsets.only(bottom: 8),
-                                      child: eligibilityCard(Map.fromEntries(e.value),
-                                          title: eligibility.length > 1 ? uniName : null),
-                                    );
-                                  }),
+                                  eligibilityCard(eligibility),
                                 ],
                               ]),
                               ),
