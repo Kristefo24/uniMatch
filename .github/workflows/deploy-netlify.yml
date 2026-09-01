@@ -8,6 +8,7 @@ on:
     paths:
       - 'app/**'
       - '.github/workflows/deploy-netlify.yml'
+  workflow_dispatch: {}
 
 jobs:
   build-and-deploy:
