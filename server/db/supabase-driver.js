@@ -167,6 +167,9 @@ async function hydrateUniversity(u) {
     busStops: (sd.criteria && Array.isArray(sd.criteria.busStops)) ? sd.criteria.busStops : [],
     motoStops: (sd.criteria && Array.isArray(sd.criteria.motoStops)) ? sd.criteria.motoStops : [],
     campusPins: (sd.criteria && sd.criteria.campusPins && typeof sd.criteria.campusPins === 'object') ? sd.criteria.campusPins : {},
+    website: (sd.criteria && sd.criteria.website) || null,
+    contactEmail: (sd.criteria && sd.criteria.contactEmail) || null,
+    contactPhone: (sd.criteria && sd.criteria.contactPhone) || null,
   };
 }
 
@@ -395,6 +398,17 @@ module.exports = {
       [uniId, JSON.stringify(data)]);
   },
   async getStaffData(uniId) { return this._staffData(uniId); },
+  // Merges just the contact email/phone into the existing criteria blob --
+  // never replaces the whole thing, unlike saveStaffCriteria, since this is
+  // called from signup which doesn't have (and mustn't wipe) the rest of it.
+  async setUniversityContacts(uniId, { contactEmail, contactPhone }) {
+    const d = await this._staffData(uniId);
+    d.criteria = { ...(d.criteria || {}) };
+    if (contactEmail != null) d.criteria.contactEmail = contactEmail;
+    if (contactPhone != null) d.criteria.contactPhone = contactPhone;
+    await this._saveStaffData(uniId, d);
+    return d;
+  },
   async saveStaffCampuses(uniId, campuses) {
     const d = await this._staffData(uniId); d.campuses = campuses;
     await this._saveStaffData(uniId, d);

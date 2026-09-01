@@ -260,7 +260,7 @@ class Api {
 
   static Future<Map<String, dynamic>> signup(String name, String email,
           String password, String role,
-          {String? track, String? universityId}) async {
+          {String? track, String? universityId, String? contactEmail, String? contactPhone}) async {
     final res = await _post('/signup', {
       'name': name,
       'email': email,
@@ -268,6 +268,8 @@ class Api {
       'role': role,
       if (track != null) 'track': track,
       if (universityId != null) 'universityId': universityId,
+      if (contactEmail != null) 'contactEmail': contactEmail,
+      if (contactPhone != null) 'contactPhone': contactPhone,
     });
     if (res['token'] != null) token = res['token'];
     return res;
@@ -1271,6 +1273,8 @@ class _SignupScreenState extends State<SignupScreen> {
   final name = TextEditingController();
   final email = TextEditingController();
   final pass = TextEditingController();
+  final contactEmail = TextEditingController();   // staff only: university's public contact
+  final contactPhone = TextEditingController();    // staff only: university's public contact
   String role = 'student';
   String? track;                      // A2 combination code (student)
   String? uniId;                       // university you work for (staff)
@@ -1318,11 +1322,17 @@ class _SignupScreenState extends State<SignupScreen> {
       toast(context, 'Please choose your A2 combination.');
       return;
     }
+    if (role == 'staff' && (contactEmail.text.trim().isEmpty || contactPhone.text.trim().isEmpty)) {
+      toast(context, 'Please enter the university\'s contact email and phone.');
+      return;
+    }
     setState(() => loading = true);
     try {
       final res = await Api.signup(name.text.trim(), email.text.trim(), pass.text, role,
           track: role == 'student' ? track : null,
-          universityId: role == 'staff' ? uniId : null);
+          universityId: role == 'staff' ? uniId : null,
+          contactEmail: role == 'staff' ? contactEmail.text.trim() : null,
+          contactPhone: role == 'staff' ? contactPhone.text.trim() : null);
       if (!mounted) return;
       if (role == 'staff') {
         toast(context, 'Staff account created — an admin must confirm it before you can log in.');
@@ -1462,6 +1472,17 @@ class _SignupScreenState extends State<SignupScreen> {
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
                   child: Text('Your account stays pending until an admin confirms you work at this university.',
+                      style: TextStyle(color: C.muted, fontSize: 12)),
+                ),
+                const SizedBox(height: 16),
+                _label('UNIVERSITY CONTACT EMAIL'),
+                TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
+                const SizedBox(height: 16),
+                _label('UNIVERSITY CONTACT PHONE'),
+                TextField(controller: contactPhone, decoration: fieldDeco('+250 7xx xxx xxx')),
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text('Shown to graduates as the way to reach your university — editable later from Criteria answers.',
                       style: TextStyle(color: C.muted, fontSize: 12)),
                 ),
                 const SizedBox(height: 16),
@@ -1963,7 +1984,13 @@ class _RankingsEntryScreenState extends State<RankingsEntryScreen> {
 
 /// A2: Compare — always works; two slots default to UoK + AUCA, each with a Change button.
 class CompareScreen extends StatefulWidget {
-  const CompareScreen({super.key});
+  // When set, the left slot opens pre-loaded with this university and the
+  // right slot starts empty (a "Pick a university" placeholder) so the
+  // graduate picks the second one themselves -- used when arriving from a
+  // ranked card's context menu. Omitted (default) keeps the normal
+  // both-slots-defaulted entry from the drawer/results-page button.
+  final String? initialLeftId;
+  const CompareScreen({super.key, this.initialLeftId});
   @override
   State<CompareScreen> createState() => _CompareScreenState();
 }
@@ -1993,9 +2020,16 @@ class _CompareScreenState extends State<CompareScreen> {
     Api.universities().then((list) async {
       if (!mounted) return;
       unis = list;
-      // defaults: UoK + AUCA
-      left = _find('uni-uok') ?? (list.isNotEmpty ? list[0] as Map<String, dynamic> : null);
-      right = _find('uni-auca') ?? (list.length > 1 ? list[1] as Map<String, dynamic> : null);
+      if (widget.initialLeftId != null) {
+        // Arrived from a ranked card's "Compare" menu action -- pre-load
+        // just that one, leave the other slot empty for the graduate to pick.
+        left = _find(widget.initialLeftId!);
+        right = null;
+      } else {
+        // defaults: UoK + AUCA
+        left = _find('uni-uok') ?? (list.isNotEmpty ? list[0] as Map<String, dynamic> : null);
+        right = _find('uni-auca') ?? (list.length > 1 ? list[1] as Map<String, dynamic> : null);
+      }
       setState(() {});
       if (left != null) await _loadDetail(left!['id']);
       if (right != null) await _loadDetail(right!['id']);
@@ -3618,6 +3652,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
   late Future<List<dynamic>> _future;
   Map<String, dynamic> staffAnswersById = {};
   Map<String, String> labelByCode = {};
+  Offset? _tapPos; // where the finger/cursor landed -- anchors the card's context menu there
 
   @override
   void initState() {
@@ -3695,6 +3730,190 @@ class _ResultsScreenState extends State<ResultsScreen> {
     );
   }
 
+  // Up to 5 of the graduate's selected criteria, highest-weighted first
+  // (List.sort is stable, so equal weights keep their original order) --
+  // caps the "Reason to rank" sheet at a readable length when more than 5
+  // were picked.
+  List<Map<String, dynamic>> _topCriteriaByWeight() {
+    final list = List<Map<String, dynamic>>.from(widget.criteria);
+    list.sort((a, b) {
+      final wa = (a['weight'] as num?)?.toDouble() ?? 0;
+      final wb = (b['weight'] as num?)?.toDouble() ?? 0;
+      return wb.compareTo(wa);
+    });
+    return list.take(5).toList();
+  }
+
+  // This university's 1st-5th place among the universities actually shown,
+  // for one specific criterion -- respecting whether lower or higher is
+  // better for it. Ties keep the order they already have in [ranked] (i.e.
+  // by overall score), since List.sort is stable. Returns null if this
+  // university has no recorded value for the code (row is then skipped).
+  int? _positionalRank(String code, String direction, List<dynamic> ranked, String uniId) {
+    final entries = ranked.map((r) {
+      final m = r as Map;
+      final v = (m['vals'] as Map?)?[code];
+      return MapEntry('${m['id']}', v is num ? v.toDouble() : null);
+    }).toList();
+    final withValue = entries.where((e) => e.value != null).toList();
+    withValue.sort((a, b) => direction == 'cost'
+        ? a.value!.compareTo(b.value!)   // lower is better
+        : b.value!.compareTo(a.value!)); // higher is better
+    final idx = withValue.indexWhere((e) => e.key == uniId);
+    return idx == -1 ? null : idx + 1;
+  }
+
+  Widget _tierPill(String text, bool strong) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: (strong ? Colors.green : const Color(0xFFB4472A)).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: (strong ? Colors.green : const Color(0xFFB4472A)).withValues(alpha: 0.4)),
+        ),
+        child: Text(text, style: TextStyle(
+            color: strong ? Colors.green.shade800 : const Color(0xFFB4472A),
+            fontSize: 10.5, fontWeight: FontWeight.w700)),
+      );
+
+  void _openReasonSheet(BuildContext context, int rank, Map u, List<dynamic> ranked) {
+    final topCriteria = _topCriteriaByWeight();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: C.cream,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Why #$rank — ${u['name'] ?? ''}',
+              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: C.ink)),
+          const SizedBox(height: 4),
+          const Text('How this university compares to the others on your matches list, criterion by criterion.',
+              style: TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
+          const SizedBox(height: 16),
+          ...topCriteria.map((c) {
+            final code = '${c['code']}';
+            final direction = '${c['direction'] ?? 'benefit'}';
+            final rankPos = _positionalRank(code, direction, ranked, '${u['id']}');
+            if (rankPos == null) return const SizedBox.shrink();
+            final strong = rankPos <= 3;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(children: [
+                Expanded(child: Text(labelByCode[code] ?? code,
+                    style: const TextStyle(color: C.ink, fontSize: 13.5))),
+                _tierPill(strong ? 'Strong' : 'Weak', strong),
+              ]),
+            );
+          }),
+          if (u.containsKey('hasExactProgramme'))
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: _tierPill(
+                  u['hasExactProgramme'] == true ? 'Programme available' : 'Programme unavailable',
+                  u['hasExactProgramme'] == true),
+            ),
+        ]),
+      ),
+    );
+  }
+
+  void _openContactsSheet(BuildContext context, String id, String name) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: C.cream,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+        child: FutureBuilder<Map<String, dynamic>>(
+          future: Api.university(id),
+          builder: (ctx, snap) {
+            if (snap.connectionState != ConnectionState.done) {
+              return const SizedBox(height: 120,
+                  child: Center(child: CircularProgressIndicator(color: C.green)));
+            }
+            final data = snap.data ?? {};
+            final contactEmail = data['contactEmail'] as String?;
+            final contactPhone = data['contactPhone'] as String?;
+            final website = data['website'] as String?;
+            Widget row(IconData icon, String label, String? value, {VoidCallback? onTap}) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: GestureDetector(
+                    onTap: onTap,
+                    child: Row(children: [
+                      Icon(icon, size: 18, color: C.green),
+                      const SizedBox(width: 10),
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(label, style: const TextStyle(color: C.muted, fontSize: 11)),
+                        Text(value?.isNotEmpty == true ? value! : 'Not provided yet',
+                            style: TextStyle(
+                                color: onTap != null && value?.isNotEmpty == true ? C.green : C.ink,
+                                fontWeight: FontWeight.w600, fontSize: 13.5,
+                                decoration: onTap != null && value?.isNotEmpty == true
+                                    ? TextDecoration.underline : null)),
+                      ])),
+                    ]),
+                  ),
+                );
+            return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('$name — contacts', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: C.ink)),
+              const SizedBox(height: 16),
+              row(Icons.email_outlined, 'Contact email', contactEmail),
+              row(Icons.phone_outlined, 'Contact phone', contactPhone),
+              row(Icons.language, 'Website', website, onTap: (website?.isNotEmpty == true)
+                  ? () => launchUrl(
+                      Uri.parse(website!.startsWith('http') ? website : 'https://$website'),
+                      mode: LaunchMode.externalApplication)
+                  : null),
+            ]);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openCardMenu(BuildContext context, int i, Map u, List<dynamic> ranked) async {
+    final pos = _tapPos ?? Offset.zero;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(pos, pos),
+      Offset.zero & overlay.size,
+    );
+    final choice = await showMenu<String>(
+      context: context,
+      position: position,
+      items: [
+        const PopupMenuItem(value: 'details', child: Text('Details')),
+        PopupMenuItem(value: 'reason', child: Text('Reason to rank #${i + 1}')),
+        const PopupMenuItem(value: 'contacts', child: Text('University contacts')),
+        const PopupMenuItem(value: 'compare', child: Text('Compare')),
+        const PopupMenuItem(value: 'shortlist', child: Text('Add to shortlist')),
+      ],
+    );
+    if (!context.mounted || choice == null) return;
+    switch (choice) {
+      case 'details':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => DetailScreen(id: u['id'], name: u['name'])));
+        break;
+      case 'reason':
+        _openReasonSheet(context, i + 1, u, ranked);
+        break;
+      case 'contacts':
+        _openContactsSheet(context, u['id'] as String, '${u['name'] ?? ''}');
+        break;
+      case 'compare':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => CompareScreen(initialLeftId: u['id'] as String)));
+        break;
+      case 'shortlist':
+        try {
+          await Api.shortlist(u['id']);
+          if (context.mounted) toast(context, 'Added ${u['name']} to shortlist');
+        } catch (e) {
+          if (context.mounted) toast(context, e.toString());
+        }
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -3759,8 +3978,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                 .whereType<String>()
                                 .toList();
                         return GestureDetector(
-                          onTap: () => Navigator.push(context,
-                              MaterialPageRoute(builder: (_) => DetailScreen(id: u['id'], name: u['name']))),
+                          onTapDown: (d) => _tapPos = d.globalPosition,
+                          onTap: () => _openCardMenu(context, i, u, ranked),
                           child: Container(
                             margin: const EdgeInsets.only(bottom: 10),
                             decoration: BoxDecoration(
@@ -3810,7 +4029,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                     Text('$pct', style: GoogleFonts.bricolageGrotesque(
                                         fontWeight: FontWeight.w600, fontSize: 22, height: 1,
                                         color: top1 ? C.gold : C.green)),
-                                    Text('CC', style: TextStyle(fontFamily: 'monospace', fontSize: 9.5,
+                                    Text('Score', style: TextStyle(fontFamily: 'monospace', fontSize: 9.5,
                                         color: top1 ? const Color(0xFFCDE3DA) : C.muted)),
                                   ]),
                                 ]),
@@ -5939,6 +6158,14 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
 
                 _section('C23 · Minimum entry grade'),
                 _textField('Lowest grade you accept (e.g. Bs or Cs)', 'minGrade'),
+
+                _section('Contact & website'),
+                const Text('Shown to graduates on the ranking page — not scored, just informational.',
+                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                const SizedBox(height: 10),
+                _textField('Contact email', 'contactEmail'),
+                _textField('Contact phone', 'contactPhone'),
+                _textField('Website', 'website'),
 
                 if (otherCriteria.isNotEmpty) ...[
                   _section('Other criteria'),

@@ -51,12 +51,20 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch(e => {
 
 // ---- auth -----------------------------------------------------------------
 app.post('/signup', wrap(async (req, res) => {
-  const { name, email, password, role, universityId, track } = req.body || {};
+  const { name, email, password, role, universityId, track, contactEmail, contactPhone } = req.body || {};
   if (!name || !email || !password) throw new Error('Name, email and password are required');
+  // Staff signup also registers the university's public contact info —
+  // required so every university has it from day one.
+  if ((role || 'student') === 'staff' && (!contactEmail || !contactPhone)) {
+    throw new Error('University contact email and phone are required');
+  }
   const hashed = await bcrypt.hash(password, 10);
   const user = await db.createUser({ name, email, password: hashed, role: role || 'student', universityId, track });
   // Staff must be confirmed by an admin before they can log in — no token yet.
-  if (user.role === 'staff') return res.json({ pending: true, user: { name, email, role: 'staff' } });
+  if (user.role === 'staff') {
+    if (universityId) await db.setUniversityContacts(universityId, { contactEmail, contactPhone });
+    return res.json({ pending: true, user: { name, email, role: 'staff' } });
+  }
   res.json({ token: sign(user), user: { id: user.id, name: user.name, email: user.email, role: user.role, track: user.track || null, photo: user.photo || null } });
 }));
 

@@ -124,6 +124,9 @@ function staffExtras(uniId) {
     busStops: Array.isArray(c.busStops) ? c.busStops : [],
     motoStops: Array.isArray(c.motoStops) ? c.motoStops : [],
     campusPins: (c.campusPins && typeof c.campusPins === 'object') ? c.campusPins : {},
+    website: c.website || null,
+    contactEmail: c.contactEmail || null,
+    contactPhone: c.contactPhone || null,
   };
 }
 
@@ -222,6 +225,19 @@ module.exports = {
   async saveStaffCampusesAndProgrammes(uniId, campuses, programmes) {
     await this.saveStaffCampuses(uniId, campuses);
     await this.saveStaffProgrammes(uniId, programmes);
+    return db.staffData[uniId];
+  },
+  // Merges just the contact email/phone into the existing criteria blob --
+  // never replaces the whole thing, unlike saveStaffCriteria, since this is
+  // called from signup which doesn't have (and mustn't wipe) the rest of it.
+  async setUniversityContacts(uniId, { contactEmail, contactPhone }) {
+    db.staffData = db.staffData || {};
+    const existing = db.staffData[uniId] || { campuses: [], combos: {}, criteria: {} };
+    const criteria = { ...(existing.criteria || {}) };
+    if (contactEmail != null) criteria.contactEmail = contactEmail;
+    if (contactPhone != null) criteria.contactPhone = contactPhone;
+    db.staffData[uniId] = { ...existing, criteria };
+    save();
     return db.staffData[uniId];
   },
   async saveStaffCombos(uniId, combos) {
