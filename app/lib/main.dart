@@ -1345,6 +1345,10 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
                 toast(context, 'Passwords do not match');
                 return;
               }
+              if (pass.text.length < 8) {
+                toast(context, 'Password must be at least 8 characters.');
+                return;
+              }
               setState(() => submitting = true);
               try {
                 await Api.resetPassword(widget.email, otp.text.trim(), pass.text);
@@ -1425,6 +1429,10 @@ class _SignupScreenState extends State<SignupScreen> {
     }
     if (role == 'staff' && (contactEmail.text.trim().isEmpty || contactPhone.text.trim().isEmpty)) {
       toast(context, 'Please enter the university\'s contact email and phone.');
+      return;
+    }
+    if (pass.text.length < 8) {
+      toast(context, 'Password must be at least 8 characters.');
       return;
     }
     setState(() => loading = true);
@@ -1751,6 +1759,10 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
     }
     if (newPass.text != confirm.text) {
       toast(context, 'New passwords do not match');
+      return;
+    }
+    if (newPass.text.length < 8) {
+      toast(context, 'New password must be at least 8 characters.');
       return;
     }
     setState(() => loading = true);

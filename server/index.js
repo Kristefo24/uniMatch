@@ -60,6 +60,7 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch(e => {
 app.post('/signup', wrap(async (req, res) => {
   const { name, email, password, role, universityId, track, contactEmail, contactPhone } = req.body || {};
   if (!name || !email || !password) throw new Error('Name, email and password are required');
+  if (password.length < 8) throw new Error('Password must be at least 8 characters');
   // Staff signup also registers the university's public contact info —
   // required so every university has it from day one.
   if ((role || 'student') === 'staff' && (!contactEmail || !contactPhone)) {
@@ -622,6 +623,7 @@ app.post('/forgot-password', wrap(async (req, res) => {
 app.post('/reset-password', wrap(async (req, res) => {
   const { email, otp, password } = req.body || {};
   if (!email || !otp || !password) throw new Error('Email, code and new password are required');
+  if (password.length < 8) throw new Error('Password must be at least 8 characters');
   const hashed = await bcrypt.hash(password, 10);
   await db.resetPassword(email, otp, hashed);
   res.json({ ok: true });
@@ -630,6 +632,7 @@ app.post('/reset-password', wrap(async (req, res) => {
 app.post('/me/change-password', auth(), wrap(async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
   if (!currentPassword || !newPassword) throw new Error('Current and new password are required');
+  if (newPassword.length < 8) throw new Error('New password must be at least 8 characters');
   const user = await db.findUserByEmail(req.user.email);
   if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
     throw new Error('Current password is incorrect');
