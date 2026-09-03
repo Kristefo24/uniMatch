@@ -26,6 +26,21 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS home_lat DOUBLE PRECISION;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS home_lng DOUBLE PRECISION;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS suspend_reason TEXT;
 
+-- A student signup that hasn't verified its email OTP yet -- the real
+-- `users` row is only created once verify-signup succeeds, so an
+-- unverified attempt never counts as a real account. One row per email;
+-- re-signing up before verifying overwrites the previous attempt.
+CREATE TABLE IF NOT EXISTS pending_signups (
+  email          VARCHAR(160) PRIMARY KEY,
+  name           VARCHAR(160) NOT NULL,
+  password       VARCHAR(200) NOT NULL,
+  track          VARCHAR(20),
+  university_id  VARCHAR(64),
+  otp            VARCHAR(6) NOT NULL,
+  otp_expires    VARCHAR(40) NOT NULL,
+  created_at     TIMESTAMP
+);
+
 -- Evaluation criteria the admin manages. direction: 'cost' | 'benefit'.
 CREATE TABLE IF NOT EXISTS criteria (
   code       VARCHAR(8) PRIMARY KEY,

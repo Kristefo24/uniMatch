@@ -81,6 +81,31 @@ function migrateOrphanedComboKeys() {
   if (changed) save();
 }
 
+// One-time (per boot) cleanup of duplicate applications left over from
+// before recordApplication started deleting the previous row on every new
+// apply -- keeps only the most-recent (by createdAt) row per student and
+// permanently drops any older duplicates. A missing/unparseable createdAt
+// sorts as oldest (epoch 0), never as the kept row, unless it's the only
+// row for that student. Idempotent: a store with no duplicate userId
+// already has nothing for this to touch.
+function dedupeApplications() {
+  const ts = (a) => {
+    const t = a.createdAt ? Date.parse(a.createdAt) : NaN;
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const byUser = {};
+  for (const a of db.applications) (byUser[a.userId] ||= []).push(a);
+  let changed = false;
+  const kept = [];
+  for (const rows of Object.values(byUser)) {
+    if (rows.length === 1) { kept.push(rows[0]); continue; }
+    changed = true;
+    rows.sort((a, b) => ts(a) - ts(b));
+    kept.push(rows[rows.length - 1]); // most recent
+  }
+  if (changed) { db.applications = kept; save(); }
+}
+
 function load() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(FILE)) {
@@ -100,6 +125,7 @@ function load() {
   }
   migratePlainTextPasswords();
   migrateOrphanedComboKeys();
+  dedupeApplications();
 }
 function save() {
   fs.writeFileSync(FILE, JSON.stringify(db, null, 2));
@@ -397,9 +423,24 @@ module.exports = {
     };
   },
 
+  // One active application per student -- applying elsewhere replaces
+  // whatever they had before instead of piling up extra rows that would
+  // double-count them in every university's reports.
   async recordApplication({ userId, universityId, programmeId, homeArea }) {
+    db.applications = db.applications.filter(a => a.userId !== userId);
     const row = { id: uid('app'), userId, universityId, programmeId, homeArea, createdAt: new Date().toISOString() };
     db.applications.push(row); save(); return row;
+  },
+  async getMyApplication(userId) {
+    const a = db.applications.find(x => x.userId === userId);
+    if (!a) return null;
+    const uni = db.universities.find(u => u.id === a.universityId);
+    const prog = db.programmes.find(p => p.id === a.programmeId);
+    return {
+      universityId: a.universityId, universityName: uni ? uni.name : null,
+      programmeId: a.programmeId || null, programmeName: prog ? prog.name : null,
+      createdAt: a.createdAt || null,
+    };
   },
   async recordShortlist({ userId, universityId }) {
     if (!db.shortlists.find(s => s.userId === userId && s.universityId === universityId)) {
@@ -629,6 +670,37 @@ module.exports = {
     save();
     return { id: u.id, name: u.name, track: u.track || null, photo: u.photo || null,
       homeArea: u.homeArea || null, homeLat: u.homeLat ?? null, homeLng: u.homeLng ?? null };
+  },
+
+  // ---- signup email verification (students only) ----
+  // One pending record per email -- re-signing up before verifying just
+  // overwrites the previous attempt with fresh data and a fresh code.
+  async createPendingSignup({ name, email, password, track, universityId, otp, otpExpires }) {
+    db.pendingSignups = db.pendingSignups || {};
+    db.pendingSignups[email.toLowerCase()] = {
+      name, email, password, track: track || null, universityId: universityId || null,
+      otp, otpExpires, createdAt: new Date().toISOString(),
+    };
+    save();
+    return { ok: true };
+  },
+  async getPendingSignup(email) {
+    db.pendingSignups = db.pendingSignups || {};
+    return db.pendingSignups[(email || '').toLowerCase()] || null;
+  },
+  async deletePendingSignup(email) {
+    db.pendingSignups = db.pendingSignups || {};
+    delete db.pendingSignups[(email || '').toLowerCase()];
+    save();
+    return { ok: true };
+  },
+
+  async changePassword(userId, password) {
+    const u = db.users.find(x => x.id === userId);
+    if (!u) throw new Error('User not found');
+    u.password = password;
+    save();
+    return { ok: true };
   },
 
   async setResetOtp(userId, otp, expiresAt) {

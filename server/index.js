@@ -6,6 +6,13 @@ const bcrypt = require('bcryptjs');
 
 const db = require('./db');
 const { topsis, haversineKm } = require('./topsis');
+const mailer = require('./mailer');
+const ExcelJS = require('exceljs');
+
+// Shared by signup verification and password reset -- both are a 6-digit
+// code that expires 2 minutes after it's (re)sent.
+const OTP_TTL_MS = 2 * 60 * 1000;
+const genOtp = () => String(Math.floor(100000 + Math.random() * 900000));
 
 const PORT = Number(process.env.PORT || 4000);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
@@ -59,13 +66,49 @@ app.post('/signup', wrap(async (req, res) => {
     throw new Error('University contact email and phone are required');
   }
   const hashed = await bcrypt.hash(password, 10);
-  const user = await db.createUser({ name, email, password: hashed, role: role || 'student', universityId, track });
-  // Staff must be confirmed by an admin before they can log in — no token yet.
-  if (user.role === 'staff') {
+  // Staff: unchanged — account created immediately, gated by admin
+  // confirmation (no token yet, no email-OTP step for this role).
+  if ((role || 'student') === 'staff') {
+    const user = await db.createUser({ name, email, password: hashed, role: 'staff', universityId, track });
     if (universityId) await db.setUniversityContacts(universityId, { contactEmail, contactPhone });
     return res.json({ pending: true, user: { name, email, role: 'staff' } });
   }
-  res.json({ token: sign(user), user: { id: user.id, name: user.name, email: user.email, role: user.role, track: user.track || null, photo: user.photo || null } });
+  // Student: the real account isn't created yet — a code is emailed and
+  // must be verified via /verify-signup first. A second signup attempt with
+  // the same (still-unverified) email just overwrites the pending one with
+  // a fresh code, so a mistyped field or a lost email doesn't strand them.
+  if (await db.findUserByEmail(email)) throw new Error('An account with this email already exists');
+  const otp = genOtp();
+  const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
+  await db.createPendingSignup({ name, email, password: hashed, track, universityId, otp, otpExpires });
+  await mailer.sendMail({ to: email, subject: 'Your UniMatch verification code',
+    text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
+    html: mailer.otpEmailHtml({ intro: 'Use the code below to verify your UniMatch account:', otp }) });
+  res.json({ needsVerification: true, email });
+}));
+
+app.post('/verify-signup', wrap(async (req, res) => {
+  const { email, otp } = req.body || {};
+  if (!email || !otp) throw new Error('Email and code are required');
+  const pending = await db.getPendingSignup(email);
+  if (!pending || pending.otp !== otp) throw new Error('Invalid or expired code');
+  if (!pending.otpExpires || new Date(pending.otpExpires).getTime() < Date.now()) throw new Error('Invalid or expired code');
+  await db.createUser({ name: pending.name, email: pending.email, password: pending.password, role: 'student', universityId: pending.universityId, track: pending.track });
+  await db.deletePendingSignup(email);
+  res.json({ ok: true });
+}));
+
+app.post('/resend-signup-otp', wrap(async (req, res) => {
+  const { email } = req.body || {};
+  const pending = await db.getPendingSignup(email || '');
+  if (!pending) throw new Error('No pending signup found for that email — please sign up again');
+  const otp = genOtp();
+  const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
+  await db.createPendingSignup({ ...pending, otp, otpExpires });
+  await mailer.sendMail({ to: pending.email, subject: 'Your UniMatch verification code',
+    text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
+    html: mailer.otpEmailHtml({ intro: 'Here is your new UniMatch verification code:', otp }) });
+  res.json({ ok: true });
 }));
 
 app.post('/login', wrap(async (req, res) => {
@@ -281,6 +324,9 @@ app.post('/apply', auth(), wrap(async (req, res) => {
   const { universityId, programmeId, homeArea } = req.body || {};
   res.json(await db.recordApplication({ userId: req.user?.id, universityId, programmeId, homeArea }));
 }));
+app.get('/me/application', auth(), wrap(async (req, res) => {
+  res.json(await db.getMyApplication(req.user?.id));
+}));
 app.post('/shortlist', auth(), wrap(async (req, res) => {
   res.json(await db.recordShortlist({ userId: req.user?.id, universityId: req.body.universityId }));
 }));
@@ -302,7 +348,13 @@ app.get('/staff-requests', auth(), requireRole('admin'), wrap(async (_req, res) 
   res.json(await db.listStaffRequests());
 }));
 app.post('/staff-requests/:id/confirm', auth(), requireRole('admin'), wrap(async (req, res) => {
-  res.json(await db.confirmStaffRequest(req.params.id));
+  const r = await db.confirmStaffRequest(req.params.id);
+  if (r && r.email) {
+    await mailer.sendMail({ to: r.email, subject: 'Your UniMatch staff account is confirmed',
+      text: 'Your UniMatch staff account has been confirmed — you can now log in.',
+      html: mailer.emailTemplate('<p>Your UniMatch staff account has been confirmed — you can now log in.</p>') });
+  }
+  res.json(r);
 }));
 app.post('/staff-requests/:id/status', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.setStaffRequestStatus(req.params.id, (req.body && req.body.status) || 'suspended'));
@@ -400,6 +452,82 @@ app.get('/admin/report', auth(), requireRole('admin'), wrap(async (_req, res) =>
   res.json(await db.adminReport());
 }));
 
+// A fixed display-only stand-in for a missing/blank application date in
+// this one report -- never written back to the database (adminReport()'s
+// `date` field for that row stays '' at the source; this only affects what
+// the exported workbook shows).
+const REPORT_MISSING_DATE = '8/25/2026';
+
+// Capitalizes the first letter of every word -- same normalization as the
+// client's _titleCase (app/lib/main.dart), reimplemented here because this
+// report is now built server-side.
+function titleCase(s) {
+  return String(s || '').split(' ').map(w => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w)).join(' ');
+}
+
+// Excel worksheet names: <=31 chars, none of \ / ? * [ ] :, not blank, and
+// unique within the workbook -- sanitize a university name into one, adding
+// a numeric suffix on collision (e.g. two universities truncating to the
+// same 31 chars).
+function safeSheetName(name, used) {
+  let base = String(name || 'Sheet').replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 31) || 'Sheet';
+  let candidate = base;
+  let n = 2;
+  while (used.has(candidate.toLowerCase())) {
+    const suffix = ` (${n++})`;
+    candidate = base.slice(0, 31 - suffix.length) + suffix;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
+
+// Real multi-sheet .xlsx for the admin "A2 applicants list" report -- one
+// worksheet per university (all universities from adminReport(), even ones
+// with zero applicants, so the workbook's sheet list always matches the
+// admin's university list), one row per applicant. Reuses adminReport()
+// rather than adding a parallel driver method, since it already returns
+// applicants pre-joined with student name/email/home/date across all 3
+// drivers.
+app.get('/admin/report/applicants.xlsx', auth(), requireRole('admin'), wrap(async (_req, res) => {
+  const report = await db.adminReport();
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'UniMatch Gasabo';
+  workbook.created = new Date();
+
+  const byUniversity = new Map(); // university display name -> applicant rows
+  for (const u of report.universities) byUniversity.set(u.name, []);
+  for (const a of report.applications) {
+    if (!byUniversity.has(a.university)) byUniversity.set(a.university, []); // stray/unknown universityId, defensive
+    byUniversity.get(a.university).push(a);
+  }
+
+  const used = new Set();
+  for (const [uniName, applicants] of byUniversity) {
+    const sheet = workbook.addWorksheet(safeSheetName(uniName, used));
+    sheet.columns = [
+      { header: 'Student', key: 'student', width: 28 },
+      { header: 'Email', key: 'email', width: 30 },
+      { header: 'Home area', key: 'home', width: 22 },
+      { header: 'Date', key: 'date', width: 14 },
+    ];
+    sheet.getRow(1).font = { bold: true };
+    for (const a of applicants) {
+      sheet.addRow({
+        student: titleCase(a.student || ''),
+        email: a.email || '',
+        home: a.home || '',
+        date: (a.date && String(a.date).trim()) ? a.date : REPORT_MISSING_DATE,
+      });
+    }
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="a2-applicants.xlsx"');
+  res.send(Buffer.from(buffer));
+}));
+
 // admin: universities CRUD
 app.get('/admin/universities', auth(), requireRole('admin'), wrap(async (_req, res) => {
   const list = await db.listUniversities();
@@ -467,11 +595,9 @@ app.delete('/admin/students/:id', auth(), requireRole('admin'), wrap(async (req,
 app.get('/health', (_req, res) => res.json({ ok: true, driver: (process.env.DB_DRIVER || 'json') }));
 
 // ---- forgot password ------------------------------------------------------
-// Student/admin: a real, randomly generated, expiring OTP is stored server-side
-// and must be verified by /reset-password before the password actually changes.
-// No email provider is configured for this project, so the OTP is returned in
-// the response instead of being emailed — wire up a mail service to send it
-// for real instead of surfacing it to the client.
+// Student/admin: a real, randomly generated OTP (2-minute expiry, matching
+// signup) is stored server-side, emailed, and must be verified by
+// /reset-password before the password actually changes.
 // Staff: the reset must be re-confirmed by an admin, so their account goes
 // back to pending and they can't log in until confirmed again.
 app.post('/forgot-password', wrap(async (req, res) => {
@@ -484,10 +610,13 @@ app.post('/forgot-password', wrap(async (req, res) => {
     if (r) await db.setStaffRequestStatus(r.id, 'pending');
     return res.json({ staff: true });
   }
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const otp = genOtp();
+  const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
   await db.setResetOtp(user.id, otp, expiresAt);
-  res.json({ staff: false, otp });
+  await mailer.sendMail({ to: user.email, subject: 'Your UniMatch password reset code',
+    text: `Your UniMatch password reset code is ${otp}. It expires in 2 minutes.`,
+    html: mailer.otpEmailHtml({ intro: 'Use the code below to reset your UniMatch password:', otp }) });
+  res.json({ staff: false });
 }));
 
 app.post('/reset-password', wrap(async (req, res) => {
@@ -495,6 +624,18 @@ app.post('/reset-password', wrap(async (req, res) => {
   if (!email || !otp || !password) throw new Error('Email, code and new password are required');
   const hashed = await bcrypt.hash(password, 10);
   await db.resetPassword(email, otp, hashed);
+  res.json({ ok: true });
+}));
+
+app.post('/me/change-password', auth(), wrap(async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (!currentPassword || !newPassword) throw new Error('Current and new password are required');
+  const user = await db.findUserByEmail(req.user.email);
+  if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+    throw new Error('Current password is incorrect');
+  }
+  const hashed = await bcrypt.hash(newPassword, 10);
+  await db.changePassword(user.id, hashed);
   res.json({ ok: true });
 }));
 

@@ -143,6 +143,28 @@ async function migrateOrphanedComboKeys() {
   }
 }
 
+// One-time (per boot) cleanup of duplicate applications -- same logic/intent
+// as the MySQL driver's dedupeApplications(), adapted for Postgres's
+// opposite NULL-ordering default (Postgres sorts NULL first under DESC by
+// default, so NULLS LAST must be explicit to treat a missing created_at as
+// oldest, matching MySQL's native DESC behavior).
+async function dedupeApplications() {
+  await q(`
+    DELETE FROM applications a
+    USING (
+      SELECT id FROM (
+        SELECT id, ROW_NUMBER() OVER (
+          PARTITION BY user_id ORDER BY created_at DESC NULLS LAST, id DESC
+        ) AS rn
+        FROM applications
+        WHERE user_id IS NOT NULL
+      ) ranked
+      WHERE ranked.rn > 1
+    ) dup
+    WHERE a.id = dup.id
+  `);
+}
+
 async function hydrateUniversity(u) {
   const { rows: camps } = await q('SELECT id,name FROM campuses WHERE university_id=$1', [u.id]);
   for (const c of camps) {
@@ -181,6 +203,7 @@ module.exports = {
     await seedCombinationsIfMissing();
     await migratePlainTextPasswords();
     await migrateOrphanedComboKeys();
+    await dedupeApplications();
   },
 
   async createUser({ name, email, password, role, universityId, track }) {
@@ -204,6 +227,33 @@ module.exports = {
       'RETURNING id,name,track,photo,home_area,home_lat,home_lng',
       [name || null, track || null, photo || null, homeArea || null, homeLat ?? null, homeLng ?? null, id]);
     return rows[0];
+  },
+
+  // ---- signup email verification (students only) ----
+  // One pending record per email -- re-signing up before verifying just
+  // overwrites the previous attempt with fresh data and a fresh code.
+  async createPendingSignup({ name, email, password, track, universityId, otp, otpExpires }) {
+    await q(
+      'INSERT INTO pending_signups (email,name,password,track,university_id,otp,otp_expires,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ' +
+      'ON CONFLICT (email) DO UPDATE SET name=EXCLUDED.name, password=EXCLUDED.password, track=EXCLUDED.track, ' +
+      'university_id=EXCLUDED.university_id, otp=EXCLUDED.otp, otp_expires=EXCLUDED.otp_expires, created_at=NOW()',
+      [email.toLowerCase(), name, password, track || null, universityId || null, otp, otpExpires]);
+    return { ok: true };
+  },
+  async getPendingSignup(email) {
+    const { rows } = await q('SELECT * FROM pending_signups WHERE email=$1', [(email || '').toLowerCase()]);
+    if (!rows.length) return null;
+    const r = rows[0];
+    return { name: r.name, email: r.email, password: r.password, track: r.track, universityId: r.university_id, otp: r.otp, otpExpires: r.otp_expires };
+  },
+  async deletePendingSignup(email) {
+    await q('DELETE FROM pending_signups WHERE email=$1', [(email || '').toLowerCase()]);
+    return { ok: true };
+  },
+
+  async changePassword(userId, password) {
+    await q('UPDATE users SET password=$1 WHERE id=$2', [password, userId]);
+    return { ok: true };
   },
 
   async setResetOtp(userId, otp, expiresAt) {
@@ -537,7 +587,8 @@ module.exports = {
   },
   async staffReport(uniId) {
     const { rows: apps } = await q(
-      'SELECT a.home_area, a.created_at, u.name, u.email, u.track, p.name AS programme_name, p.dept AS programme_dept ' +
+      'SELECT a.home_area, a.created_at, u.name, u.email, u.track, u.home_area AS user_home_area, u.home AS user_home, ' +
+      'p.name AS programme_name, p.dept AS programme_dept ' +
       'FROM applications a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN programmes p ON p.id=a.programme_id ' +
       'WHERE a.university_id=$1', [uniId]);
     const { rows: sl } = await q('SELECT COUNT(*)::int AS n FROM shortlists WHERE university_id=$1', [uniId]);
@@ -550,7 +601,8 @@ module.exports = {
       try { return JSON.parse(r.university_ids || '[]').some(u => u.id === uniId); } catch { return false; }
     }).length;
     const applicants = apps.map(a => ({
-      name: a.name || 'A2 graduate', email: a.email || '', home: a.home_area || '',
+      name: a.name || 'A2 graduate', email: a.email || '',
+      home: a.home_area || a.user_home_area || a.user_home || '',
       date: a.created_at ? new Date(a.created_at).toISOString().slice(0, 10) : '',
       // Blank rather than fabricated when a legacy application predates the
       // programme/track being recorded, or the student never set a combo.
@@ -606,11 +658,28 @@ module.exports = {
     };
   },
 
+  // One active application per student -- applying elsewhere replaces
+  // whatever they had before instead of piling up extra rows that would
+  // double-count them in every university's reports.
   async recordApplication({ userId, universityId, programmeId, homeArea }) {
     const id = uid('app');
+    await q('DELETE FROM applications WHERE user_id=$1', [userId]);
     await q('INSERT INTO applications (id,user_id,university_id,programme_id,home_area,created_at) VALUES ($1,$2,$3,$4,$5,NOW())',
       [id, userId, universityId, programmeId, homeArea]);
     return { id };
+  },
+  async getMyApplication(userId) {
+    const { rows } = await q(
+      'SELECT a.university_id, a.programme_id, a.created_at, u.name AS university_name, p.name AS programme_name ' +
+      'FROM applications a LEFT JOIN universities u ON u.id=a.university_id LEFT JOIN programmes p ON p.id=a.programme_id ' +
+      'WHERE a.user_id=$1 LIMIT 1', [userId]);
+    if (!rows.length) return null;
+    const a = rows[0];
+    return {
+      universityId: a.university_id, universityName: a.university_name || null,
+      programmeId: a.programme_id || null, programmeName: a.programme_name || null,
+      createdAt: a.created_at ? new Date(a.created_at).toISOString() : null,
+    };
   },
   async recordShortlist({ userId, universityId }) {
     await q('INSERT INTO shortlists (id,user_id,university_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',

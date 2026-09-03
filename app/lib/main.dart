@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInputFormatter, TextEditingValue;
@@ -210,6 +211,38 @@ class C {
   static Color uni(String abbr) => _uniColors[abbr] ?? green;
 }
 
+// Shared by staff/admin report bar-lists ("Most-chosen criteria", "Combos
+// reached on the lists") to color each bar by its relative value rather
+// than a single flat color -- best/most, good/middle, worst/fewer. Ratio-
+// based (not positional), so it's correct regardless of whether the list
+// itself is sorted ascending or descending.
+Color _tierColor(num n, num maxN) {
+  if (maxN <= 0) return C.green;
+  final ratio = n / maxN;
+  if (ratio >= 0.66) return C.green;
+  if (ratio >= 0.33) return C.gold;
+  return const Color(0xFFB4472A);
+}
+
+// Gasabo's 15 official sectors -- used to pull a plain sector name (e.g.
+// "Kacyiru") out of a home-location string for on-screen display, since raw
+// values range from a full geocoded address to a short legacy "Sector,
+// District" string. The full raw value is left untouched everywhere else
+// (e.g. CSV exports) -- this is a display-only simplification.
+const _kGasaboSectors = [
+  'Bumbogo', 'Gatsata', 'Gikomero', 'Gisozi', 'Jabana', 'Jali', 'Kacyiru',
+  'Kimihurura', 'Kimironko', 'Kinyinya', 'Ndera', 'Nduba', 'Remera',
+  'Rusororo', 'Rutunga',
+];
+String _gasaboSector(String? rawHome) {
+  final home = (rawHome ?? '').toLowerCase();
+  if (home.isEmpty) return 'Unknown';
+  for (final sector in _kGasaboSectors) {
+    if (home.contains(sector.toLowerCase())) return sector;
+  }
+  return 'Unknown';
+}
+
 void main() => runApp(const UniMatchApp());
 
 /// ---- API layer -------------------------------------------------------------
@@ -362,6 +395,13 @@ class Api {
   static Future<void> apply(String universityId, String programmeId, String homeArea) =>
       _post('/apply', {'universityId': universityId, 'programmeId': programmeId, 'homeArea': homeArea});
 
+  // Null if the graduate has no active application. A student can only have
+  // one at a time -- applying elsewhere replaces it server-side.
+  static Future<Map<String, dynamic>?> myApplication() async {
+    final res = await _get('/me/application');
+    return res == null ? null : Map<String, dynamic>.from(res as Map);
+  }
+
   static Future<void> shortlist(String universityId) =>
       _post('/shortlist', {'universityId': universityId});
 
@@ -390,6 +430,12 @@ class Api {
       _post('/forgot-password', {'email': email});
   static Future<void> resetPassword(String email, String otp, String password) =>
       _post('/reset-password', {'email': email, 'otp': otp, 'password': password});
+  static Future<void> verifySignup(String email, String otp) =>
+      _post('/verify-signup', {'email': email, 'otp': otp});
+  static Future<void> resendSignupOtp(String email) =>
+      _post('/resend-signup-otp', {'email': email});
+  static Future<void> changePassword(String currentPassword, String newPassword) =>
+      _post('/me/change-password', {'currentPassword': currentPassword, 'newPassword': newPassword});
   static Future<void> setStaffStatus(String id, String status) =>
       _post('/staff-requests/$id/status', {'status': status});
   static Future<void> deleteStaff(String id) => _delete('/staff-requests/$id');
@@ -429,6 +475,19 @@ class Api {
       _put('/staff/$uniId/photo', {'photo': photo});
   static Future<Map<String, dynamic>> adminReport() async =>
       Map<String, dynamic>.from(await _get('/admin/report'));
+
+  // Binary download (not JSON) -- can't reuse _get, which always json-decodes
+  // the body; reads raw bytes instead, same auth header and error-shape
+  // convention as every other Api call.
+  static Future<Uint8List> downloadAdminApplicantsXlsx() async {
+    final r = await http.get(Uri.parse('$kBaseUrl/admin/report/applicants.xlsx'), headers: _headers());
+    if (r.statusCode >= 400) {
+      Map data = {};
+      try { data = jsonDecode(r.body); } catch (_) {}
+      throw ApiError((data['error'] ?? 'Request failed').toString());
+    }
+    return r.bodyBytes;
+  }
 
   // ---- admin: universities ----
   static Future<List<dynamic>> adminUniversities() async =>
@@ -722,7 +781,13 @@ Future<void> _editProfile(BuildContext context) async {
 Widget profileAction(BuildContext context) => Padding(
       padding: const EdgeInsets.only(right: 10),
       child: PopupMenuButton<String>(
-        onSelected: (v) { if (v == 'logout') _logout(context); else if (v == 'edit') _editProfile(context); },
+        onSelected: (v) {
+          if (v == 'logout') _logout(context);
+          else if (v == 'edit') _editProfile(context);
+          else if (v == 'change_password') {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const ChangePasswordScreen()));
+          }
+        },
         itemBuilder: (_) => [
           PopupMenuItem(value: 'header', enabled: false, child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -733,6 +798,8 @@ Widget profileAction(BuildContext context) => Padding(
           const PopupMenuDivider(),
           const PopupMenuItem(value: 'edit', child: Row(children: [
             Icon(Icons.edit_outlined, size: 18, color: C.green), SizedBox(width: 10), Text('Edit profile')])),
+          const PopupMenuItem(value: 'change_password', child: Row(children: [
+            Icon(Icons.lock_outline, size: 18, color: C.green), SizedBox(width: 10), Text('Change password')])),
           const PopupMenuItem(value: 'logout', child: Row(children: [
             Icon(Icons.logout, size: 18, color: Color(0xFFC25A1F)), SizedBox(width: 10), Text('Log out')])),
         ],
@@ -1126,7 +1193,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const _StaffResetPendingScreen()));
       } else {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) =>
-            OtpResetScreen(email: email.text.trim(), demoOtp: res['otp'] as String?)));
+            OtpResetScreen(email: email.text.trim())));
       }
     } catch (e) {
       if (mounted) toast(context, e.toString());
@@ -1186,8 +1253,7 @@ class _StaffResetPendingScreen extends StatelessWidget {
 
 class OtpResetScreen extends StatefulWidget {
   final String email;
-  final String? demoOtp;
-  const OtpResetScreen({super.key, required this.email, this.demoOtp});
+  const OtpResetScreen({super.key, required this.email});
   @override
   State<OtpResetScreen> createState() => _OtpResetScreenState();
 }
@@ -1195,13 +1261,21 @@ class OtpResetScreen extends StatefulWidget {
 class _OtpResetScreenState extends State<OtpResetScreen> {
   final otp = TextEditingController();
   final pass = TextEditingController();
+  final confirmPass = TextEditingController();
   int seconds = 120;
   bool submitting = false;
+  bool resending = false;
   Timer? _timer;
 
   @override
   void initState() {
     super.initState();
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    seconds = 120;
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (seconds == 0) { t.cancel(); } else { setState(() => seconds--); }
     });
@@ -1213,6 +1287,20 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
   String get mmss =>
       '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
 
+  Future<void> _resend() async {
+    setState(() => resending = true);
+    try {
+      await Api.forgotPassword(widget.email);
+      if (!mounted) return;
+      setState(_startTimer);
+      toast(context, 'A new code was sent to ${widget.email}');
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => resending = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1223,10 +1311,7 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Enter reset code', style: head(28)),
             const SizedBox(height: 8),
-            Text(widget.demoOtp != null
-                    ? 'We sent a 6-digit code to ${widget.email}. No email service is configured for this '
-                        'deployment, so your code is shown here instead: ${widget.demoOtp}'
-                    : 'We sent a 6-digit code to ${widget.email}.',
+            Text('We sent a 6-digit code to ${widget.email}.',
                 style: const TextStyle(color: C.muted, fontSize: 14)),
             const SizedBox(height: 24),
             TextField(
@@ -1237,13 +1322,29 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
               decoration: fieldDeco('••••••'),
             ),
             const SizedBox(height: 10),
-            Center(child: Text(seconds > 0 ? 'Code expires in $mmss' : 'Code expired — resend',
+            Center(child: Text(seconds > 0 ? 'Code expires in $mmss' : 'Code expired — resend it below',
                 style: TextStyle(color: seconds > 0 ? C.muted : Colors.red, fontWeight: FontWeight.w600))),
-            const SizedBox(height: 20),
+            const SizedBox(height: 6),
+            Center(
+              child: TextButton(
+                onPressed: seconds == 0 && !resending ? _resend : null,
+                child: Text(resending ? 'Sending…' : 'Resend code'),
+              ),
+            ),
+            const SizedBox(height: 14),
             TextField(controller: pass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
+            const SizedBox(height: 16),
+            TextField(controller: confirmPass, obscureText: true, decoration: fieldDeco('Confirm new password', icon: Icons.lock_outline)),
             const SizedBox(height: 24),
             primaryButton('Reset password', () async {
-              if (otp.text.trim().isEmpty || pass.text.isEmpty) { toast(context, 'Enter the code and a new password'); return; }
+              if (otp.text.trim().isEmpty || pass.text.isEmpty || confirmPass.text.isEmpty) {
+                toast(context, 'Enter the code, new password and confirmation');
+                return;
+              }
+              if (pass.text != confirmPass.text) {
+                toast(context, 'Passwords do not match');
+                return;
+              }
               setState(() => submitting = true);
               try {
                 await Api.resetPassword(widget.email, otp.text.trim(), pass.text);
@@ -1518,12 +1619,21 @@ class VerifyScreen extends StatefulWidget {
 }
 
 class _VerifyScreenState extends State<VerifyScreen> {
+  final code = TextEditingController();
   int seconds = 120;
+  bool verifying = false;
+  bool resending = false;
   Timer? _timer;
 
   @override
   void initState() {
     super.initState();
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    seconds = 120;
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (seconds == 0) {
         t.cancel();
@@ -1545,6 +1655,38 @@ class _VerifyScreenState extends State<VerifyScreen> {
     return '$m:$s';
   }
 
+  Future<void> _verify() async {
+    if (code.text.trim().isEmpty) { toast(context, 'Enter the code'); return; }
+    setState(() => verifying = true);
+    try {
+      await Api.verifySignup(widget.email, code.text.trim());
+      if (!mounted) return;
+      toast(context, 'Email verified — you can log in now.');
+      // Registering doesn't sign the graduate in -- they land back
+      // on login and authenticate for real, like any other account.
+      Navigator.pushAndRemoveUntil(
+          context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => verifying = false);
+    }
+  }
+
+  Future<void> _resend() async {
+    setState(() => resending = true);
+    try {
+      await Api.resendSignupOtp(widget.email);
+      if (!mounted) return;
+      setState(_startTimer);
+      toast(context, 'A new code was sent to ${widget.email}');
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => resending = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1561,6 +1703,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
                   style: const TextStyle(color: C.muted, fontSize: 14)),
               const SizedBox(height: 28),
               TextField(
+                controller: code,
                 keyboardType: TextInputType.number,
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 24, letterSpacing: 8, fontWeight: FontWeight.w700),
@@ -1572,21 +1715,74 @@ class _VerifyScreenState extends State<VerifyScreen> {
                     style: TextStyle(color: seconds > 0 ? C.muted : Colors.red, fontWeight: FontWeight.w600)),
               ),
               const SizedBox(height: 24),
-              primaryButton('Verify & continue', () {
-                // Registering doesn't sign the graduate in -- they land back
-                // on login and authenticate for real, like any other account.
-                Navigator.pushAndRemoveUntil(
-                    context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
-              }),
+              primaryButton('Verify & continue', _verify, loading: verifying),
               const SizedBox(height: 12),
               Center(
                 child: TextButton(
-                  onPressed: seconds == 0 ? () => setState(() => seconds = 120) : null,
-                  child: const Text('Resend code'),
+                  onPressed: seconds == 0 && !resending ? _resend : null,
+                  child: Text(resending ? 'Sending…' : 'Resend code'),
                 ),
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// ---- Change password (logged-in graduate or staff) ------------------------
+class ChangePasswordScreen extends StatefulWidget {
+  const ChangePasswordScreen({super.key});
+  @override
+  State<ChangePasswordScreen> createState() => _ChangePasswordScreenState();
+}
+
+class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
+  final current = TextEditingController();
+  final newPass = TextEditingController();
+  final confirm = TextEditingController();
+  bool loading = false;
+
+  Future<void> _submit() async {
+    if (current.text.isEmpty || newPass.text.isEmpty || confirm.text.isEmpty) {
+      toast(context, 'Fill in all three fields');
+      return;
+    }
+    if (newPass.text != confirm.text) {
+      toast(context, 'New passwords do not match');
+      return;
+    }
+    setState(() => loading = true);
+    try {
+      await Api.changePassword(current.text, newPass.text);
+      if (!mounted) return;
+      toast(context, 'Password changed');
+      Navigator.pop(context);
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Change password')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const SizedBox(height: 8),
+            TextField(controller: current, obscureText: true, decoration: fieldDeco('Current password', icon: Icons.lock_outline)),
+            const SizedBox(height: 16),
+            TextField(controller: newPass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
+            const SizedBox(height: 16),
+            TextField(controller: confirm, obscureText: true, decoration: fieldDeco('Confirm new password', icon: Icons.lock_outline)),
+            const SizedBox(height: 24),
+            primaryButton('Change password', _submit, loading: loading),
+          ]),
         ),
       ),
     );
@@ -3388,6 +3584,24 @@ class _LocationScreenState extends State<LocationScreen> {
   bool locating = false;
 
   @override
+  void initState() {
+    super.initState();
+    // A returning graduate re-running this wizard (e.g. to check a
+    // different department) already has a saved home location -- pre-fill
+    // it so tapping "Show rank" without touching the map reuses it instead
+    // of silently overwriting it with null (pin?.latitude on an untouched
+    // null pin), which was breaking "Distance from your home" everywhere
+    // for the rest of that session.
+    if (Session.homeLat != null && Session.homeLng != null) {
+      pin = LatLng(Session.homeLat!, Session.homeLng!);
+    }
+    if (Session.homeArea.isNotEmpty) {
+      picked = Session.homeArea;
+      addr.text = Session.homeArea;
+    }
+  }
+
+  @override
   void dispose() {
     addr.dispose();
     _debounce?.cancel();
@@ -3436,7 +3650,13 @@ class _LocationScreenState extends State<LocationScreen> {
         if (mounted) toast(context, 'Location access was denied — allow it in your browser to use this.');
         return;
       }
-      final pos = await Geolocator.getCurrentPosition();
+      // Explicit high accuracy + a timeout -- without this, some
+      // browsers/devices silently fall back to coarse Wi-Fi/IP-based
+      // positioning (off by anywhere from hundreds of meters to km).
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.best, timeLimit: Duration(seconds: 15)),
+      );
       final p = LatLng(pos.latitude, pos.longitude);
       final label = await reverseGeocodeAddress(p);
       if (!mounted) return;
@@ -3492,7 +3712,7 @@ class _LocationScreenState extends State<LocationScreen> {
               FlutterMap(
                 mapController: _mapController,
                 options: MapOptions(
-                  initialCenter: _gasabo,
+                  initialCenter: pin ?? _gasabo,
                   initialZoom: 13,
                   onTap: (_, point) => _reverseGeocode(point),
                 ),
@@ -4514,6 +4734,19 @@ class _DetailScreenState extends State<DetailScreen> {
                 Expanded(
                   child: primaryButton('Apply', () async {
                     try {
+                      // A graduate can only have one active application --
+                      // applying elsewhere replaces it server-side, so
+                      // confirm first rather than silently cancelling a real
+                      // application from an absent-minded tap.
+                      final existing = await Api.myApplication();
+                      if (existing != null && existing['universityId'] != widget.id) {
+                        if (!mounted) return;
+                        final otherName = existing['universityName'] ?? 'another university';
+                        final proceed = await _confirmDialog(context, 'Replace your application?',
+                            'You\'re currently applied to $otherName — apply here instead? '
+                            'This will cancel your application to $otherName.');
+                        if (!proceed) return;
+                      }
                       String programmeId = '';
                       if (Session.selectedProgramme != null) {
                         final progs = await Api.programmes(null);
@@ -4523,6 +4756,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         programmeId = '${match['id'] ?? ''}';
                       }
                       await Api.apply(widget.id, programmeId, Session.homeArea);
+                      if (mounted) toast(context, 'Applied to ${widget.name}');
                       final url = kApplyUrls[widget.id];
                       if (url != null) {
                         await launchUrl(Uri.parse(url),
@@ -6712,7 +6946,7 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
     final subtitle = [
       if ((a['combo'] ?? '').toString().trim().isNotEmpty) '${a['combo']}',
       if (progLine.isNotEmpty) progLine,
-      if ((a['home'] ?? '').toString().trim().isNotEmpty) '${a['home']}',
+      _gasaboSector(a['home'] as String?),
     ].join(' · ');
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -6753,7 +6987,7 @@ class _StaffReportsScreenState extends State<StaffReportsScreen> {
               borderRadius: BorderRadius.circular(999),
               child: LinearProgressIndicator(
                   value: n / maxN, minHeight: 7, backgroundColor: C.sand,
-                  valueColor: const AlwaysStoppedAnimation(C.green)),
+                  valueColor: AlwaysStoppedAnimation(_tierColor(n, maxN))),
             ),
           ),
           const SizedBox(width: 12),
@@ -8202,15 +8436,12 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
               _dropdown(reportType, _types, (v) {
                 setState(() {
                   reportType = v!;
-                  // This report type is inherently already broken down by
-                  // every university -- scoping it further is redundant, so
-                  // its own picker below gets disabled instead. Reset any
-                  // stale selection so it isn't left invisibly active.
-                  if (v == 'Applications by university') reportUni = 'All universities';
+                  // Any stale per-university selection from the previous
+                  // report type would be invisibly active otherwise -- every
+                  // report type change goes back to "All universities".
+                  reportUni = 'All universities';
                 });
-                if (v == 'Most-chosen criteria') {
-                  _loadCriteriaUsage(reportUni == 'All universities' ? null : uniIdByName[reportUni]);
-                }
+                if (v == 'Most-chosen criteria') _loadCriteriaUsage(null);
               }),
               const SizedBox(height: 6),
               Text(_typeHint[reportType] ?? '', style: const TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
@@ -8241,8 +8472,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
               GestureDetector(
                 onTap: () {
                   if (reportType == 'A2 applicants list') {
-                    _downloadCsv('Applicants', ['Student', 'Email', 'University', 'Home area', 'Date'],
-                        apps.map((a) => [_titleCase('${a['student'] ?? ''}'), a['email'], a['university'], a['home'], a['date']]).toList());
+                    _downloadApplicantsXlsx();
                   } else if (reportType == 'Most-chosen criteria') {
                     _downloadCsv(reportType, ['Criterion', 'Code', 'selections'],
                         rows.map((u) => [u['name'], u['abbr'], u['n']]).toList());
@@ -8257,7 +8487,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.download, color: C.gold, size: 18),
                     const SizedBox(width: 10),
-                    Text('Download  ${reportType == 'A2 applicants list' ? 'applicants' : rowUnit}  (CSV)',
+                    Text('Download  ${reportType == 'A2 applicants list' ? 'applicants' : rowUnit}  (${reportType == 'A2 applicants list' ? 'XLSX' : 'CSV'})',
                         style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700, fontSize: 14)),
                   ]),
                 ),
@@ -8294,7 +8524,9 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                               value: (u['n'] as int) / maxN,
                               minHeight: 7,
                               backgroundColor: C.sand,
-                              valueColor: AlwaysStoppedAnimation(C.uni('${u['abbr']}')),
+                              valueColor: AlwaysStoppedAnimation(reportType == 'Most-chosen criteria'
+                                  ? _tierColor(u['n'] as int, maxN)
+                                  : C.uni('${u['abbr']}')),
                             ),
                           ),
                         ),
@@ -8313,6 +8545,17 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     final filename = '${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-')}.csv';
     csv_download.downloadCsv(filename, _toCsv(header, rows));
     if (mounted) toast(context, 'Downloading $filename (${rows.length} rows)');
+  }
+
+  Future<void> _downloadApplicantsXlsx() async {
+    try {
+      final bytes = await Api.downloadAdminApplicantsXlsx();
+      csv_download.downloadBytes('a2-applicants.xlsx', bytes,
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      if (mounted) toast(context, 'Downloading a2-applicants.xlsx');
+    } catch (e) {
+      if (mounted) toast(context, 'Could not generate report: $e');
+    }
   }
 
   Widget _lbl(String t) => Padding(
