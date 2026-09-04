@@ -453,6 +453,18 @@ app.get('/admin/report', auth(), requireRole('admin'), wrap(async (_req, res) =>
   res.json(await db.adminReport());
 }));
 
+// TEMPORARY diagnostic for the signup-OTP-not-arriving investigation -- reports
+// only whether this running process currently sees the mailer credentials, and
+// the sending address itself (not a secret -- it's already visible in every
+// outgoing email's From header). Never returns GMAIL_APP_PASSWORD. Remove once
+// the delivery issue is resolved.
+app.get('/admin/mailer-status', auth(), requireRole('admin'), wrap(async (_req, res) => {
+  res.json({
+    mailerConfigured: !!(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD),
+    gmailUser: process.env.GMAIL_USER || null,
+  });
+}));
+
 // A fixed display-only stand-in for a missing/blank application date in
 // this one report -- never written back to the database (adminReport()'s
 // `date` field for that row stays '' at the source; this only affects what
