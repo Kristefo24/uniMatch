@@ -12,6 +12,13 @@ function getTransporter() {
   transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    // Fail fast instead of hanging the request for minutes if outbound SMTP
+    // is slow/blocked on the host's network -- callers don't await sendMail
+    // (see index.js) specifically so a slow send can never stall a response,
+    // but a bounded timeout still keeps a stuck connection from lingering.
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 15000,
   });
   return transporter;
 }

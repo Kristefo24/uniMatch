@@ -82,9 +82,13 @@ app.post('/signup', wrap(async (req, res) => {
   const otp = genOtp();
   const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
   await db.createPendingSignup({ name, email, password: hashed, track, universityId, otp, otpExpires });
-  await mailer.sendMail({ to: email, subject: 'Your UniMatch verification code',
+  // Not awaited on purpose -- the pending signup already exists (Resend
+  // code works regardless), so the response shouldn't wait on a possibly
+  // slow/unreachable SMTP connection.
+  mailer.sendMail({ to: email, subject: 'Your UniMatch verification code',
     text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
-    html: mailer.otpEmailHtml({ intro: 'Use the code below to verify your UniMatch account:', otp }) });
+    html: mailer.otpEmailHtml({ intro: 'Use the code below to verify your UniMatch account:', otp }) })
+    .catch(e => console.error('[mailer] signup OTP send failed:', e.message));
   res.json({ needsVerification: true, email });
 }));
 
@@ -106,9 +110,10 @@ app.post('/resend-signup-otp', wrap(async (req, res) => {
   const otp = genOtp();
   const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
   await db.createPendingSignup({ ...pending, otp, otpExpires });
-  await mailer.sendMail({ to: pending.email, subject: 'Your UniMatch verification code',
+  mailer.sendMail({ to: pending.email, subject: 'Your UniMatch verification code',
     text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
-    html: mailer.otpEmailHtml({ intro: 'Here is your new UniMatch verification code:', otp }) });
+    html: mailer.otpEmailHtml({ intro: 'Here is your new UniMatch verification code:', otp }) })
+    .catch(e => console.error('[mailer] resend OTP send failed:', e.message));
   res.json({ ok: true });
 }));
 
@@ -351,9 +356,10 @@ app.get('/staff-requests', auth(), requireRole('admin'), wrap(async (_req, res) 
 app.post('/staff-requests/:id/confirm', auth(), requireRole('admin'), wrap(async (req, res) => {
   const r = await db.confirmStaffRequest(req.params.id);
   if (r && r.email) {
-    await mailer.sendMail({ to: r.email, subject: 'Your UniMatch staff account is confirmed',
+    mailer.sendMail({ to: r.email, subject: 'Your UniMatch staff account is confirmed',
       text: 'Your UniMatch staff account has been confirmed — you can now log in.',
-      html: mailer.emailTemplate('<p>Your UniMatch staff account has been confirmed — you can now log in.</p>') });
+      html: mailer.emailTemplate('<p>Your UniMatch staff account has been confirmed — you can now log in.</p>') })
+      .catch(e => console.error('[mailer] staff-confirm send failed:', e.message));
   }
   res.json(r);
 }));
@@ -626,9 +632,10 @@ app.post('/forgot-password', wrap(async (req, res) => {
   const otp = genOtp();
   const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
   await db.setResetOtp(user.id, otp, expiresAt);
-  await mailer.sendMail({ to: user.email, subject: 'Your UniMatch password reset code',
+  mailer.sendMail({ to: user.email, subject: 'Your UniMatch password reset code',
     text: `Your UniMatch password reset code is ${otp}. It expires in 2 minutes.`,
-    html: mailer.otpEmailHtml({ intro: 'Use the code below to reset your UniMatch password:', otp }) });
+    html: mailer.otpEmailHtml({ intro: 'Use the code below to reset your UniMatch password:', otp }) })
+    .catch(e => console.error('[mailer] reset OTP send failed:', e.message));
   res.json({ staff: false });
 }));
 
