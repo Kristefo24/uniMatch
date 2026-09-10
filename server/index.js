@@ -462,11 +462,11 @@ app.get('/admin/report', auth(), requireRole('admin'), wrap(async (_req, res) =>
 // TEMPORARY diagnostic for the signup-OTP-not-arriving investigation -- reports
 // only whether this running process currently sees the mailer credentials, and
 // the sending address itself (not a secret -- it's already visible in every
-// outgoing email's From header). Never returns GMAIL_APP_PASSWORD. Remove once
+// outgoing email's From header). Never returns BREVO_API_KEY. Remove once
 // the delivery issue is resolved.
 app.get('/admin/mailer-status', auth(), requireRole('admin'), wrap(async (_req, res) => {
   res.json({
-    mailerConfigured: !!(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD),
+    mailerConfigured: !!(process.env.GMAIL_USER && process.env.BREVO_API_KEY),
     gmailUser: process.env.GMAIL_USER || null,
   });
 }));

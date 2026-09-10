@@ -1,26 +1,18 @@
-// Thin wrapper around nodemailer + Gmail SMTP. If GMAIL_USER/GMAIL_APP_PASSWORD
-// aren't set (local dev without the credential, or a misconfigured deploy),
-// this logs the email to the console instead of throwing -- lets the whole
-// OTP flow be developed and tested end-to-end without ever needing real
-// credentials or sending real mail.
-const nodemailer = require('nodemailer');
+// Sends transactional email via Brevo's HTTP API rather than raw SMTP.
+// Railway's outbound network was confirmed (VERIFY FAILED: Connection
+// timeout, tested directly from the running container) to be unable to
+// reach Gmail's SMTP servers -- likely blocked at the network/IP level,
+// a common restriction on shared cloud hosting. An HTTPS API call on
+// port 443 isn't subject to that. If BREVO_API_KEY or GMAIL_USER (reused
+// as the verified "from" address -- no domain needed, just a
+// single-sender verification in Brevo) aren't set, this logs the email
+// to the console instead of sending -- lets the whole OTP flow be
+// developed/tested end-to-end without real credentials or sending real
+// mail.
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
-let transporter = null;
-function getTransporter() {
-  if (transporter) return transporter;
-  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return null;
-  transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
-    // Fail fast instead of hanging the request for minutes if outbound SMTP
-    // is slow/blocked on the host's network -- callers don't await sendMail
-    // (see index.js) specifically so a slow send can never stall a response,
-    // but a bounded timeout still keeps a stuck connection from lingering.
-    connectionTimeout: 8000,
-    greetingTimeout: 8000,
-    socketTimeout: 15000,
-  });
-  return transporter;
+function configured() {
+  return !!(process.env.BREVO_API_KEY && process.env.GMAIL_USER);
 }
 
 // Shared wrapper so every outgoing email looks consistent -- no external
@@ -48,12 +40,29 @@ function otpEmailHtml({ intro, otp, ttlMinutes = 2 }) {
 }
 
 async function sendMail({ to, subject, text, html }) {
-  const t = getTransporter();
-  if (!t) {
-    console.log(`[mailer] GMAIL_USER/GMAIL_APP_PASSWORD not set -- logging instead of sending.\n  To: ${to}\n  Subject: ${subject}\n  Body: ${text}${html ? '\n  (HTML body also set — not shown in this log)' : ''}`);
+  if (!configured()) {
+    console.log(`[mailer] BREVO_API_KEY/GMAIL_USER not set -- logging instead of sending.\n  To: ${to}\n  Subject: ${subject}\n  Body: ${text}${html ? '\n  (HTML body also set — not shown in this log)' : ''}`);
     return { sent: false, logged: true };
   }
-  await t.sendMail({ from: `UniMatch Gasabo <${process.env.GMAIL_USER}>`, to, subject, text, html });
+  const res = await fetch(BREVO_API_URL, {
+    method: 'POST',
+    headers: {
+      'api-key': process.env.BREVO_API_KEY,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: 'UniMatch Gasabo', email: process.env.GMAIL_USER },
+      to: [{ email: to }],
+      subject,
+      textContent: text,
+      htmlContent: html || `<pre>${text}</pre>`,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Brevo send failed (${res.status}): ${body}`);
+  }
   return { sent: true };
 }
 
