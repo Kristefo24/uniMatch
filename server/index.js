@@ -74,46 +74,9 @@ app.post('/signup', wrap(async (req, res) => {
     if (universityId) await db.setUniversityContacts(universityId, { contactEmail, contactPhone });
     return res.json({ pending: true, user: { name, email, role: 'staff' } });
   }
-  // Student: the real account isn't created yet — a code is emailed and
-  // must be verified via /verify-signup first. A second signup attempt with
-  // the same (still-unverified) email just overwrites the pending one with
-  // a fresh code, so a mistyped field or a lost email doesn't strand them.
+  // Student: create account immediately — no email verification step.
   if (await db.findUserByEmail(email)) throw new Error('An account with this email already exists');
-  const otp = genOtp();
-  const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
-  await db.createPendingSignup({ name, email, password: hashed, track, universityId, otp, otpExpires });
-  // Not awaited on purpose -- the pending signup already exists (Resend
-  // code works regardless), so the response shouldn't wait on a possibly
-  // slow/unreachable SMTP connection.
-  mailer.sendMail({ to: email, subject: 'Your UniMatch verification code',
-    text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
-    html: mailer.otpEmailHtml({ intro: 'Use the code below to verify your UniMatch account:', otp }) })
-    .catch(e => console.error('[mailer] signup OTP send failed:', e.message));
-  res.json({ needsVerification: true, email });
-}));
-
-app.post('/verify-signup', wrap(async (req, res) => {
-  const { email, otp } = req.body || {};
-  if (!email || !otp) throw new Error('Email and code are required');
-  const pending = await db.getPendingSignup(email);
-  if (!pending || pending.otp !== otp) throw new Error('Invalid or expired code');
-  if (!pending.otpExpires || new Date(pending.otpExpires).getTime() < Date.now()) throw new Error('Invalid or expired code');
-  await db.createUser({ name: pending.name, email: pending.email, password: pending.password, role: 'student', universityId: pending.universityId, track: pending.track });
-  await db.deletePendingSignup(email);
-  res.json({ ok: true });
-}));
-
-app.post('/resend-signup-otp', wrap(async (req, res) => {
-  const { email } = req.body || {};
-  const pending = await db.getPendingSignup(email || '');
-  if (!pending) throw new Error('No pending signup found for that email — please sign up again');
-  const otp = genOtp();
-  const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
-  await db.createPendingSignup({ ...pending, otp, otpExpires });
-  mailer.sendMail({ to: pending.email, subject: 'Your UniMatch verification code',
-    text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
-    html: mailer.otpEmailHtml({ intro: 'Here is your new UniMatch verification code:', otp }) })
-    .catch(e => console.error('[mailer] resend OTP send failed:', e.message));
+  await db.createUser({ name, email, password: hashed, role: 'student', universityId, track });
   res.json({ ok: true });
 }));
 
@@ -614,11 +577,9 @@ app.delete('/admin/students/:id', auth(), requireRole('admin'), wrap(async (req,
 app.get('/health', (_req, res) => res.json({ ok: true, driver: (process.env.DB_DRIVER || 'json') }));
 
 // ---- forgot password ------------------------------------------------------
-// Student/admin: a real, randomly generated OTP (2-minute expiry, matching
-// signup) is stored server-side, emailed, and must be verified by
-// /reset-password before the password actually changes.
-// Staff: the reset must be re-confirmed by an admin, so their account goes
-// back to pending and they can't log in until confirmed again.
+// Student/admin: password is reset directly (no OTP step).
+// Staff: account goes back to pending — an admin must re-confirm before
+// they can log in again. Staff can never reset their own password.
 app.post('/forgot-password', wrap(async (req, res) => {
   const { email } = req.body || {};
   const user = await db.findUserByEmail(email || '');
@@ -629,22 +590,20 @@ app.post('/forgot-password', wrap(async (req, res) => {
     if (r) await db.setStaffRequestStatus(r.id, 'pending');
     return res.json({ staff: true });
   }
-  const otp = genOtp();
-  const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
-  await db.setResetOtp(user.id, otp, expiresAt);
-  mailer.sendMail({ to: user.email, subject: 'Your UniMatch password reset code',
-    text: `Your UniMatch password reset code is ${otp}. It expires in 2 minutes.`,
-    html: mailer.otpEmailHtml({ intro: 'Use the code below to reset your UniMatch password:', otp }) })
-    .catch(e => console.error('[mailer] reset OTP send failed:', e.message));
   res.json({ staff: false });
 }));
 
 app.post('/reset-password', wrap(async (req, res) => {
-  const { email, otp, password } = req.body || {};
-  if (!email || !otp || !password) throw new Error('Email, code and new password are required');
+  const { email, password } = req.body || {};
+  if (!email || !password) throw new Error('Email and new password are required');
   if (password.length < 8) throw new Error('Password must be at least 8 characters');
+  const user = await db.findUserByEmail(email);
+  if (!user) throw new Error('No account found with that email');
+  // Staff accounts can never self-reset — their reset goes through admin
+  // re-confirmation via /forgot-password which sets them back to pending.
+  if (user.role === 'staff') throw new Error('Staff accounts cannot be self-reset — contact your admin');
   const hashed = await bcrypt.hash(password, 10);
-  await db.resetPassword(email, otp, hashed);
+  await db.changePassword(user.id, hashed);
   res.json({ ok: true });
 }));
 
