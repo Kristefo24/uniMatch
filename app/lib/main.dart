@@ -38,7 +38,7 @@ const Map<String, String> kApplyUrls = {
 /// Set kApiUrl to your deployed backend and flip kUseHosted to true for
 /// release builds. Local dev (default) falls back to localhost (web/desktop)
 /// or 10.0.2.2 (Android emulator) — see RUN.md.
-const String kApiUrl = 'https://unimatch-production-276f.up.railway.app';
+const String kApiUrl = 'https://unimatch-production-c57b.up.railway.app';
 const bool kUseHosted = true;
 final String kBaseUrl = kUseHosted
     ? kApiUrl
@@ -52,7 +52,9 @@ final String kBaseUrl = kUseHosted
 IconData iconForField(String text) {
   final d = text.toLowerCase();
   if (d.contains('comput') || d.contains('information tech') || d.contains('software') ||
-      d.contains('network') || d.contains('science & tech') || d.contains('analytics')) return Icons.memory;
+      d.contains('network') || d.contains('science & tech') || d.contains('analytics')) {
+    return Icons.memory;
+  }
   if (d.contains('market')) return Icons.campaign_outlined;
   if (d.contains('financ')) return Icons.account_balance_wallet_outlined;
   if (d.contains('account')) return Icons.calculate_outlined;
@@ -60,17 +62,23 @@ IconData iconForField(String text) {
     return Icons.account_balance_outlined;
   }
   if (d.contains('business') || d.contains('management') || d.contains('economics') ||
-      d.contains('entrepren') || d.contains('strategic') || d.contains('trade')) return Icons.business_center_outlined;
+      d.contains('entrepren') || d.contains('strategic') || d.contains('trade')) {
+    return Icons.business_center_outlined;
+  }
   if (d.contains('law')) return Icons.gavel;
   if (d.contains('educat') || d.contains('childhood')) return Icons.school_outlined;
   if (d.contains('medic') || d.contains('health') || d.contains('nursing') || d.contains('pharm') ||
-      d.contains('dent') || d.contains('midwif')) return Icons.local_hospital_outlined;
+      d.contains('dent') || d.contains('midwif')) {
+    return Icons.local_hospital_outlined;
+  }
   if (d.contains('film') || d.contains('media') || d.contains('communication') || d.contains('journal') ||
       d.contains('broadcast') || d.contains('animation') || d.contains('theatre') || d.contains('visual effect')) {
     return Icons.movie_creation_outlined;
   }
   if (d.contains('tourism') || d.contains('hotel') || d.contains('leisure') || d.contains('hospitality') ||
-      d.contains('travel')) return Icons.hotel_outlined;
+      d.contains('travel')) {
+    return Icons.hotel_outlined;
+  }
   if (d.contains('theolog')) return Icons.auto_stories_outlined;
   if (d.contains('social')) return Icons.groups_outlined;
   return Icons.school_outlined;
@@ -83,7 +91,9 @@ IconData iconForField(String text) {
 List<String> subjectPairs(List<String> subs) {
   final out = <String>[];
   for (var i = 0; i < subs.length; i++) {
-    for (var j = i + 1; j < subs.length; j++) out.add('${subs[i]} + ${subs[j]}');
+    for (var j = i + 1; j < subs.length; j++) {
+      out.add('${subs[i]} + ${subs[j]}');
+    }
   }
   return out;
 }
@@ -299,10 +309,10 @@ class Api {
       'email': email,
       'password': password,
       'role': role,
-      if (track != null) 'track': track,
-      if (universityId != null) 'universityId': universityId,
-      if (contactEmail != null) 'contactEmail': contactEmail,
-      if (contactPhone != null) 'contactPhone': contactPhone,
+      'track': ?track,
+      'universityId': ?universityId,
+      'contactEmail': ?contactEmail,
+      'contactPhone': ?contactPhone,
     });
     if (res['token'] != null) token = res['token'];
     return res;
@@ -318,12 +328,12 @@ class Api {
     String? name, String? track, String? photo, String? homeArea, double? homeLat, double? homeLng,
   }) =>
       _put('/me', {
-        if (name != null) 'name': name,
-        if (track != null) 'track': track,
-        if (photo != null) 'photo': photo,
-        if (homeArea != null) 'homeArea': homeArea,
-        if (homeLat != null) 'homeLat': homeLat,
-        if (homeLng != null) 'homeLng': homeLng,
+        'name': ?name,
+        'track': ?track,
+        'photo': ?photo,
+        'homeArea': ?homeArea,
+        'homeLat': ?homeLat,
+        'homeLng': ?homeLng,
       });
 
   /// The student's own last saved ranking snapshot ({ranked, criteria,
@@ -363,13 +373,13 @@ class Api {
       // No universityIds -> server scores every live university, so a
       // newly admin-added one is rankable immediately, no rebuild needed.
       'criteria': criteria,
-      if (preferredReligion != null) 'preferredReligion': preferredReligion,
-      if (dept != null) 'dept': dept,
-      if (programme != null) 'programme': programme,
-      if (homeLat != null) 'homeLat': homeLat,
-      if (homeLng != null) 'homeLng': homeLng,
-      if (budgetMin != null) 'budgetMin': budgetMin,
-      if (budgetMax != null) 'budgetMax': budgetMax,
+      'preferredReligion': ?preferredReligion,
+      'dept': ?dept,
+      'programme': ?programme,
+      'homeLat': ?homeLat,
+      'homeLng': ?homeLng,
+      'budgetMin': ?budgetMin,
+      'budgetMax': ?budgetMax,
     });
     return List<dynamic>.from(res['ranked'] ?? []);
   }
@@ -426,10 +436,14 @@ class Api {
       await _get('/staff-requests') as List<dynamic>;
 
   static Future<void> confirmStaff(String id) => _post('/staff-requests/$id/confirm', {});
-  static Future<Map<String, dynamic>> forgotPassword(String email, {String? password}) =>
-      _post('/forgot-password', {'email': email, if (password != null) 'password': password});
-  static Future<void> resetPassword(String email, String password) =>
-      _post('/reset-password', {'email': email, 'password': password});
+  static Future<Map<String, dynamic>> forgotPassword(String email) =>
+      _post('/forgot-password', {'email': email});
+  static Future<void> resetPassword(String email, String otp, String password) =>
+      _post('/reset-password', {'email': email, 'otp': otp, 'password': password});
+  static Future<void> verifySignup(String email, String otp) =>
+      _post('/verify-signup', {'email': email, 'otp': otp});
+  static Future<void> resendSignupOtp(String email) =>
+      _post('/resend-signup-otp', {'email': email});
   static Future<void> changePassword(String currentPassword, String newPassword) =>
       _post('/me/change-password', {'currentPassword': currentPassword, 'newPassword': newPassword});
   static Future<void> setStaffStatus(String id, String status) =>
@@ -520,7 +534,7 @@ class Api {
   static Future<List<dynamic>> adminStudents() async =>
       await _get('/admin/students') as List<dynamic>;
   static Future<void> setStudentSuspended(String id, bool suspended, {String? reason}) =>
-      _post('/admin/students/$id/suspended', {'suspended': suspended, if (reason != null) 'reason': reason});
+      _post('/admin/students/$id/suspended', {'suspended': suspended, 'reason': ?reason});
 }
 
 class ApiError implements Exception {
@@ -584,7 +598,7 @@ void _bumpAvatar() => _avatarVersion.value++;
 Widget userAvatar({double radius = 17, Color bg = C.green, Color fg = Colors.white}) {
   return ValueListenableBuilder<int>(
     valueListenable: _avatarVersion,
-    builder: (context, _, __) {
+    builder: (context, _, _) {
       final img = _decodeAvatarPhoto(Session.photo);
       return CircleAvatar(
         radius: radius,
@@ -743,7 +757,7 @@ Future<void> _editProfile(BuildContext context) async {
         if (Session.role == 'student') ...[
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
-            value: track,
+            initialValue: track,
             isExpanded: true,
             decoration: fieldDeco('A2 combination'),
             hint: const Text('Select your combination'),
@@ -778,8 +792,9 @@ Widget profileAction(BuildContext context) => Padding(
       padding: const EdgeInsets.only(right: 10),
       child: PopupMenuButton<String>(
         onSelected: (v) {
-          if (v == 'logout') _logout(context);
-          else if (v == 'edit') _editProfile(context);
+          if (v == 'logout') {
+            _logout(context);
+          } else if (v == 'edit') _editProfile(context);
           else if (v == 'change_password') {
             Navigator.push(context, MaterialPageRoute(builder: (_) => const ChangePasswordScreen()));
           }
@@ -1168,7 +1183,7 @@ void _routeByRole(BuildContext context, String role) {
       context, MaterialPageRoute(builder: (_) => home), (r) => false);
 }
 
-/// ---- Forgot password (direct reset, no OTP) --------------------------------
+/// ---- Forgot password + OTP reset ------------------------------------------
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
   @override
@@ -1177,28 +1192,20 @@ class ForgotPasswordScreen extends StatefulWidget {
 
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final email = TextEditingController();
-  final pass = TextEditingController();
-  final confirmPass = TextEditingController();
   bool loading = false;
 
   Future<void> _submit() async {
     if (email.text.trim().isEmpty) { toast(context, 'Enter your email'); return; }
-    if (pass.text.isEmpty || confirmPass.text.isEmpty) { toast(context, 'Enter and confirm your new password'); return; }
-    if (pass.text != confirmPass.text) { toast(context, 'Passwords do not match'); return; }
-    if (pass.text.length < 8) { toast(context, 'Password must be at least 8 characters'); return; }
     setState(() => loading = true);
     try {
-      final res = await Api.forgotPassword(email.text.trim(), password: pass.text);
+      final res = await Api.forgotPassword(email.text.trim());
       if (!mounted) return;
       if (res['staff'] == true) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const _StaffResetPendingScreen()));
-        return;
+      } else {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) =>
+            OtpResetScreen(email: email.text.trim())));
       }
-      await Api.resetPassword(email.text.trim(), pass.text);
-      if (!mounted) return;
-      toast(context, 'Password reset — you can log in now.');
-      Navigator.pushAndRemoveUntil(context,
-          MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
     } catch (e) {
       if (mounted) toast(context, e.toString());
     } finally {
@@ -1214,18 +1221,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Reset password', style: head(28)),
+            Text('Forgot password', style: head(28)),
             const SizedBox(height: 6),
-            const Text('Enter your email and choose a new password. Staff resets are re-confirmed by an admin.',
+            const Text('Enter your email and we\'ll send a reset code. Staff resets are re-confirmed by an admin.',
                 style: TextStyle(color: C.muted, fontSize: 14)),
             const SizedBox(height: 24),
             TextField(controller: email, decoration: fieldDeco('Email', icon: Icons.mail_outline)),
-            const SizedBox(height: 16),
-            TextField(controller: pass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
-            const SizedBox(height: 16),
-            TextField(controller: confirmPass, obscureText: true, decoration: fieldDeco('Confirm new password', icon: Icons.lock_outline)),
             const SizedBox(height: 24),
-            primaryButton('Reset password', _submit, loading: loading),
+            primaryButton('Send reset code', _submit, loading: loading),
           ]),
         ),
       ),
@@ -1247,7 +1250,7 @@ class _StaffResetPendingScreen extends StatelessWidget {
             const SizedBox(height: 16),
             Text('Sent to admin', style: head(24), textAlign: TextAlign.center),
             const SizedBox(height: 10),
-            const Text('Your new password has been saved. Your staff account is now pending — once an admin re-confirms it, you can log in with your new password.',
+            const Text('Your reset request was sent to the administrator. Your staff account is pending until an admin re-confirms it — then you can log in with a new password.',
                 textAlign: TextAlign.center, style: TextStyle(color: C.muted, height: 1.5)),
             const SizedBox(height: 24),
             primaryButton('Back to login', () => Navigator.pushAndRemoveUntil(
@@ -1259,6 +1262,121 @@ class _StaffResetPendingScreen extends StatelessWidget {
   }
 }
 
+class OtpResetScreen extends StatefulWidget {
+  final String email;
+  const OtpResetScreen({super.key, required this.email});
+  @override
+  State<OtpResetScreen> createState() => _OtpResetScreenState();
+}
+
+class _OtpResetScreenState extends State<OtpResetScreen> {
+  final otp = TextEditingController();
+  final pass = TextEditingController();
+  final confirmPass = TextEditingController();
+  int seconds = 120;
+  bool submitting = false;
+  bool resending = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    seconds = 120;
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (seconds == 0) { t.cancel(); } else { setState(() => seconds--); }
+    });
+  }
+
+  @override
+  void dispose() { _timer?.cancel(); super.dispose(); }
+
+  String get mmss =>
+      '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
+
+  Future<void> _resend() async {
+    setState(() => resending = true);
+    try {
+      await Api.forgotPassword(widget.email);
+      if (!mounted) return;
+      setState(_startTimer);
+      toast(context, 'A new code was sent to ${widget.email}');
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => resending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Enter reset code', style: head(28)),
+            const SizedBox(height: 8),
+            Text('We sent a 6-digit code to ${widget.email}.',
+                style: const TextStyle(color: C.muted, fontSize: 14)),
+            const SizedBox(height: 24),
+            TextField(
+              controller: otp,
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 24, letterSpacing: 8, fontWeight: FontWeight.w700),
+              decoration: fieldDeco('••••••'),
+            ),
+            const SizedBox(height: 10),
+            Center(child: Text(seconds > 0 ? 'Code expires in $mmss' : 'Code expired — resend it below',
+                style: TextStyle(color: seconds > 0 ? C.muted : Colors.red, fontWeight: FontWeight.w600))),
+            const SizedBox(height: 6),
+            Center(
+              child: TextButton(
+                onPressed: seconds == 0 && !resending ? _resend : null,
+                child: Text(resending ? 'Sending…' : 'Resend code'),
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(controller: pass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
+            const SizedBox(height: 16),
+            TextField(controller: confirmPass, obscureText: true, decoration: fieldDeco('Confirm new password', icon: Icons.lock_outline)),
+            const SizedBox(height: 24),
+            primaryButton('Reset password', () async {
+              if (otp.text.trim().isEmpty || pass.text.isEmpty || confirmPass.text.isEmpty) {
+                toast(context, 'Enter the code, new password and confirmation');
+                return;
+              }
+              if (pass.text != confirmPass.text) {
+                toast(context, 'Passwords do not match');
+                return;
+              }
+              if (pass.text.length < 8) {
+                toast(context, 'Password must be at least 8 characters.');
+                return;
+              }
+              setState(() => submitting = true);
+              try {
+                await Api.resetPassword(widget.email, otp.text.trim(), pass.text);
+                if (!mounted) return;
+                toast(context, 'Password reset — you can log in now.');
+                Navigator.pushAndRemoveUntil(context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
+              } catch (e) {
+                if (mounted) { setState(() => submitting = false); toast(context, e.toString()); }
+              }
+            }, loading: submitting),
+          ]),
+        ),
+      ),
+    );
+  }
+}
 
 /// ---- Signup ----------------------------------------------------------------
 class SignupScreen extends StatefulWidget {
@@ -1340,8 +1458,10 @@ class _SignupScreenState extends State<SignupScreen> {
         toast(context, 'Staff account created — an admin must confirm it before you can log in.');
         Navigator.pop(context);
       } else {
-        toast(context, 'Account created — you can log in now.');
-        Navigator.pop(context);
+        Navigator.push(context,
+            MaterialPageRoute(builder: (_) => VerifyScreen(
+                email: email.text.trim(),
+                user: (res['user'] as Map?)?.cast<String, dynamic>())));
       }
     } catch (e) {
       if (mounted) toast(context, e.toString());
@@ -1391,7 +1511,7 @@ class _SignupScreenState extends State<SignupScreen> {
             children: [
               Text('Create your account', style: head(28)),
               const SizedBox(height: 6),
-              const Text('Fill in the details below to create your account.',
+              const Text('We\'ll send a verification link to your email — that\'s how we know it\'s really you.',
                   style: TextStyle(color: C.muted, fontSize: 14)),
               const SizedBox(height: 20),
               _label('I AM A'),
@@ -1425,7 +1545,7 @@ class _SignupScreenState extends State<SignupScreen> {
                   )
                 else
                   DropdownButtonFormField<String>(
-                    value: track,
+                    initialValue: track,
                     isExpanded: true,
                     decoration: fieldDeco('Select your combination'),
                     hint: const Text('Select your combination'),
@@ -1455,7 +1575,7 @@ class _SignupScreenState extends State<SignupScreen> {
                   )
                 else
                   DropdownButtonFormField<String>(
-                    value: uniId,
+                    initialValue: uniId,
                     isExpanded: true,
                     decoration: fieldDeco('Select your university…'),
                     hint: const Text('Select your university…'),
@@ -1508,18 +1628,125 @@ class _SignupScreenState extends State<SignupScreen> {
   }
 }
 
-/// ---- VerifyScreen (kept for compatibility — no longer used) ----------------
-class VerifyScreen extends StatelessWidget {
+/// ---- Email verify (2-min countdown) ---------------------------------------
+class VerifyScreen extends StatefulWidget {
   final String email;
   final Map<String, dynamic>? user;
   const VerifyScreen({super.key, required this.email, this.user});
   @override
-  Widget build(BuildContext context) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+  State<VerifyScreen> createState() => _VerifyScreenState();
+}
+
+class _VerifyScreenState extends State<VerifyScreen> {
+  final code = TextEditingController();
+  int seconds = 120;
+  bool verifying = false;
+  bool resending = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    seconds = 120;
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (seconds == 0) {
+        t.cancel();
+      } else {
+        setState(() => seconds--);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  String get mmss {
+    final m = (seconds ~/ 60).toString().padLeft(2, '0');
+    final s = (seconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  Future<void> _verify() async {
+    if (code.text.trim().isEmpty) { toast(context, 'Enter the code'); return; }
+    setState(() => verifying = true);
+    try {
+      await Api.verifySignup(widget.email, code.text.trim());
+      if (!mounted) return;
+      toast(context, 'Email verified — you can log in now.');
+      // Registering doesn't sign the graduate in -- they land back
+      // on login and authenticate for real, like any other account.
       Navigator.pushAndRemoveUntil(
           context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
-    });
-    return const SizedBox.shrink();
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => verifying = false);
+    }
+  }
+
+  Future<void> _resend() async {
+    setState(() => resending = true);
+    try {
+      await Api.resendSignupOtp(widget.email);
+      if (!mounted) return;
+      setState(_startTimer);
+      toast(context, 'A new code was sent to ${widget.email}');
+    } catch (e) {
+      if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => resending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(backgroundColor: C.cream, elevation: 0, foregroundColor: C.ink),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Verify your email', style: head(28)),
+              const SizedBox(height: 8),
+              Text('We sent a 6-digit code to ${widget.email}.',
+                  style: const TextStyle(color: C.muted, fontSize: 14)),
+              const SizedBox(height: 28),
+              TextField(
+                controller: code,
+                keyboardType: TextInputType.number,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 24, letterSpacing: 8, fontWeight: FontWeight.w700),
+                decoration: fieldDeco('••••••'),
+              ),
+              const SizedBox(height: 16),
+              Center(
+                child: Text(seconds > 0 ? 'Code expires in $mmss' : 'Code expired — resend it',
+                    style: TextStyle(color: seconds > 0 ? C.muted : Colors.red, fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(height: 24),
+              primaryButton('Verify & continue', _verify, loading: verifying),
+              const SizedBox(height: 12),
+              Center(
+                child: TextButton(
+                  onPressed: seconds == 0 && !resending ? _resend : null,
+                  child: Text(resending ? 'Sending…' : 'Resend code'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -2074,7 +2301,11 @@ class _CompareScreenState extends State<CompareScreen> {
     );
     if (chosen == null) return;
     await _loadDetail(chosen['id']);
-    setState(() { if (isLeft) left = chosen; else right = chosen; });
+    setState(() { if (isLeft) {
+      left = chosen;
+    } else {
+      right = chosen;
+    } });
   }
 
   @override
@@ -2197,7 +2428,7 @@ class _CompareScreenState extends State<CompareScreen> {
             onTap: () => _change(isLeft),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(999)),
+              decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(999)),
               child: const Row(mainAxisSize: MainAxisSize.min, children: [
                 Icon(Icons.swap_horiz, color: Colors.white, size: 15),
                 SizedBox(width: 6),
@@ -3247,7 +3478,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                           fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
                                       const SizedBox(height: 8),
                                       DropdownButtonFormField<String>(
-                                        value: kReligions.contains(Session.preferredReligion) ? Session.preferredReligion : null,
+                                        initialValue: kReligions.contains(Session.preferredReligion) ? Session.preferredReligion : null,
                                         isExpanded: true,
                                         decoration: fieldDeco('Select religion or culture'),
                                         hint: const Text('Select religion or culture'),
@@ -4033,7 +4264,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                         fontSize: 11, color: top1 ? const Color(0xFFCDE3DA) : C.muted)),
                                   ])),
                                   Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                                    Text('$pct', style: GoogleFonts.bricolageGrotesque(
+                                    Text(pct, style: GoogleFonts.bricolageGrotesque(
                                         fontWeight: FontWeight.w600, fontSize: 22, height: 1,
                                         color: top1 ? C.gold : C.green)),
                                     Text('Score', style: TextStyle(fontFamily: 'monospace', fontSize: 9.5,
@@ -4157,10 +4388,12 @@ class _DetailScreenState extends State<DetailScreen> {
       }
     }).catchError((_) {});
     Api.criteria().then((list) {
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         allCriteria = list.map((c) => Map<String, dynamic>.from(c)).toList();
         labelByCode = { for (final c in allCriteria) c['code'] as String: c['label'] as String };
       });
+      }
     }).catchError((_) {});
     Api.programmes(null).then((list) {
       allProgrammes = list;
@@ -5021,7 +5254,11 @@ class _StaffCampusesScreenState extends State<StaffCampusesScreen> {
     final newName = name.text.trim();
     setState(() {
       final row = {'name': newName, 'depts': picked.toList()};
-      if (index != null) campuses[index] = row; else campuses.add(row);
+      if (index != null) {
+        campuses[index] = row;
+      } else {
+        campuses.add(row);
+      }
       // Remove every row this sheet considered "belonging" to this campus --
       // the same broadened criteria used to populate localProgs above, not
       // just an exact old-name tag match -- so a stale-tagged row can't
@@ -5853,8 +6090,9 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
   /// staff never touched is removed from d, not defaulted to 0.
   void _deriveNumericCriteria() {
     void boolToNum(String flag, String code) {
-      if (d[flag] == true) d[code] = 1;
-      else if (d[flag] == false) d[code] = 0;
+      if (d[flag] == true) {
+        d[code] = 1;
+      } else if (d[flag] == false) d[code] = 0;
       else d.remove(code);
     }
     boolToNum('accommodation', 'C08');
@@ -6402,7 +6640,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
   Widget _religionSelect() => Padding(
         padding: const EdgeInsets.only(top: 6, bottom: 6),
         child: DropdownButtonFormField<String>(
-          value: kReligions.contains(d['religion']) ? d['religion'] as String : null,
+          initialValue: kReligions.contains(d['religion']) ? d['religion'] as String : null,
           isExpanded: true,
           decoration: fieldDeco('Select religion / culture'),
           hint: const Text('Select religion / culture'),
@@ -8109,7 +8347,9 @@ String _toCsv(List<String> header, List<List<dynamic>> rows) {
         ? '"${s.replaceAll('"', '""')}"' : s;
   }
   final b = StringBuffer(header.map(cell).join(','))..write('\n');
-  for (final r in rows) b.write(r.map(cell).join(',') + '\n');
+  for (final r in rows) {
+    b.write('${r.map(cell).join(',')}\n');
+  }
   return b.toString();
 }
 
