@@ -483,6 +483,15 @@ class Api {
       await _get('/staff/$uniId/combos-reached') as List<dynamic>;
   static Future<void> updateUniversityPhoto(String uniId, String? photo) =>
       _put('/staff/$uniId/photo', {'photo': photo});
+  /// The university's public contact details, shown to graduates on the
+  /// ranking page. Edited from the staff member's own "Edit profile" sheet.
+  static Future<void> updateUniversityContacts(String uniId,
+          {String? contactEmail, String? contactPhone, String? website}) =>
+      _put('/staff/$uniId/contacts', {
+        'contactEmail': contactEmail,
+        'contactPhone': contactPhone,
+        'website': website,
+      });
   static Future<Map<String, dynamic>> adminReport() async =>
       Map<String, dynamic>.from(await _get('/admin/report'));
 
@@ -676,6 +685,20 @@ Future<void> _editProfile(BuildContext context) async {
   if (Session.role == 'student') {
     try { combos = await Api.combinations(); } catch (_) {}
   }
+  // Staff edit their university's public contacts here -- these are what a
+  // graduate sees on the ranking page, so they're seeded from whatever is
+  // currently stored rather than starting blank.
+  final contactEmail = TextEditingController();
+  final contactPhone = TextEditingController();
+  final website = TextEditingController();
+  if (Session.role == 'staff' && Session.uniId != null) {
+    try {
+      final uni = await Api.university(Session.uniId!);
+      contactEmail.text = (uni['contactEmail'] as String?) ?? '';
+      contactPhone.text = (uni['contactPhone'] as String?) ?? '';
+      website.text = (uni['website'] as String?) ?? '';
+    } catch (_) {}
+  }
   if (!context.mounted) return;
   await showModalBottomSheet(
     context: context,
@@ -767,11 +790,31 @@ Future<void> _editProfile(BuildContext context) async {
             onChanged: (v) => setSheet(() => track = v),
           ),
         ],
+        if (Session.role == 'staff' && Session.uniId != null) ...[
+          const SizedBox(height: 18),
+          const Text('UNIVERSITY CONTACTS', style: TextStyle(
+              fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
+          const SizedBox(height: 4),
+          const Text('Shown to graduates on the ranking page.',
+              style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+          const SizedBox(height: 10),
+          TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
+          const SizedBox(height: 12),
+          TextField(controller: contactPhone, decoration: fieldDeco('+250 7xx xxx xxx')),
+          const SizedBox(height: 12),
+          TextField(controller: website, decoration: fieldDeco('www.university.ac.rw')),
+        ],
         const SizedBox(height: 20),
         primaryButton('Save', () async {
           setSheet(() => saving = true);
           try {
             await Api.updateMe(name: name.text.trim(), track: track, photo: photo);
+            if (Session.role == 'staff' && Session.uniId != null) {
+              await Api.updateUniversityContacts(Session.uniId!,
+                  contactEmail: contactEmail.text.trim(),
+                  contactPhone: contactPhone.text.trim(),
+                  website: website.text.trim());
+            }
             Session.name = name.text.trim();
             Session.track = track;
             Session.photo = photo;
@@ -3268,6 +3311,27 @@ const List<String> kCriteriaCategories = [
 
 class _CriteriaScreenState extends State<CriteriaScreen> {
   final Set<String> selected = {};
+  // Picking C25 without naming a religion silently wastes the pick: /rank only
+  // overrides the C25 value when a real preference arrives, so the criterion
+  // would score nothing. "No preference" is excluded for the same reason --
+  // it's not offered in the dropdown here.
+  static final List<String> _realReligions =
+      kReligions.where((r) => r != 'No preference').toList();
+  bool get _religionMissing =>
+      selected.contains('C25') && !_realReligions.contains(Session.preferredReligion);
+
+  /// Top of the budget slider: the priciest tuition actually in the system
+  /// (C01's `maxValue`, sent by /criteria), rounded up to a clean 100k step so
+  /// the slider divisions stay tidy. Falls back to 10M when no university has
+  /// a fee yet, or when the real ceiling sits below the 500k floor -- either
+  /// would otherwise produce an inverted or zero-width slider.
+  double get _feeCeiling {
+    final c01 = visible.where((c) => c['code'] == 'C01').toList();
+    final maxValue = c01.isEmpty ? null : c01.first['maxValue'];
+    if (maxValue is! num || !maxValue.isFinite) return 10000000;
+    final rounded = (maxValue / 100000).ceil() * 100000;
+    return rounded > 500000 ? rounded.toDouble() : 10000000;
+  }
   // Categories collapsed by default; expand with the + button. Accordion
   // behavior — opening one category closes whichever other was open.
   String? expandedCategory;
@@ -3478,17 +3542,28 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                           fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
                                       const SizedBox(height: 8),
                                       DropdownButtonFormField<String>(
-                                        initialValue: kReligions.contains(Session.preferredReligion) ? Session.preferredReligion : null,
+                                        initialValue: _realReligions.contains(Session.preferredReligion) ? Session.preferredReligion : null,
                                         isExpanded: true,
                                         decoration: fieldDeco('Select religion or culture'),
                                         hint: const Text('Select religion or culture'),
-                                        items: kReligions.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
+                                        items: _realReligions.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
                                         onChanged: (v) => setState(() => Session.preferredReligion = v),
                                       ),
+                                      if (_religionMissing) ...[
+                                        const SizedBox(height: 8),
+                                        Row(children: [
+                                          const Icon(Icons.info_outline, size: 14, color: Color(0xFFC25A1F)),
+                                          const SizedBox(width: 6),
+                                          Expanded(child: Text('Choose a religion or culture to continue.',
+                                              style: TextStyle(color: const Color(0xFFC25A1F),
+                                                  fontSize: 11.5, fontWeight: FontWeight.w600))),
+                                        ]),
+                                      ],
                                     ]);
                                   } else {
-                                    final lo = (Session.budgetMin ?? 500000).clamp(500000, 10000000).toDouble();
-                                    final hi = (Session.budgetMax ?? 10000000).clamp(500000, 10000000).toDouble();
+                                    final ceiling = _feeCeiling;
+                                    final lo = (Session.budgetMin ?? 500000).clamp(500000, ceiling).toDouble();
+                                    final hi = (Session.budgetMax ?? ceiling).clamp(500000, ceiling).toDouble();
                                     panelBody = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                       const Text('YOUR BUDGET RANGE (RWF / YEAR)', style: TextStyle(
                                           fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
@@ -3497,7 +3572,8 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                                           style: const TextStyle(color: C.ink, fontWeight: FontWeight.w700, fontSize: 13)),
                                       RangeSlider(
                                         values: RangeValues(lo, hi),
-                                        min: 500000, max: 10000000, divisions: 95,
+                                        min: 500000, max: ceiling,
+                                        divisions: ((ceiling - 500000) / 100000).round().clamp(1, 1000),
                                         activeColor: C.green, inactiveColor: C.sand,
                                         labels: RangeLabels(_fmtRwf(lo), _fmtRwf(hi)),
                                         onChanged: (v) => setState(() {
@@ -3565,7 +3641,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                 child: SizedBox(
                   height: 50,
                   child: ElevatedButton(
-                    onPressed: selected.length < 2 ? null : () {
+                    onPressed: (selected.length < 2 || _religionMissing) ? null : () {
                       final criteria = selected.map((code) {
                         final c = visible.firstWhere((x) => x['code'] == code);
                         return {'code': code, 'weight': 1 / selected.length, 'direction': c['direction']};
@@ -3578,7 +3654,12 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                       disabledBackgroundColor: C.sand, disabledForegroundColor: C.muted, elevation: 0,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
                     ),
-                    child: Text(selected.length < 2 ? 'Select at least 2 criteria' : 'Continue · ${selected.length} selected',
+                    child: Text(
+                        selected.length < 2
+                            ? 'Select at least 2 criteria'
+                            : _religionMissing
+                                ? 'Choose a religion or culture'
+                                : 'Continue · ${selected.length} selected',
                         style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
                   ),
                 ),
@@ -3608,6 +3689,11 @@ class _LocationScreenState extends State<LocationScreen> {
   LatLng? pin;
   List<Map<String, dynamic>> searchResults = [];
   Timer? _debounce;
+
+  /// Whether the graduate picked the distance-from-home criterion. Same shape
+  /// as the C25 check in ResultsScreen -- when it's absent, a home location is
+  /// genuinely optional and this step stays skippable.
+  bool get _needsHome => widget.criteria.any((c) => c['code'] == 'C07');
   bool locating = false;
 
   @override
@@ -3847,7 +3933,13 @@ class _LocationScreenState extends State<LocationScreen> {
             child: SizedBox(
               height: 50,
               child: ElevatedButton.icon(
-                onPressed: () {
+                // C07 scores the distance from home, which needs real
+                // coordinates -- `pin`, not the address text (typing without
+                // picking a suggestion leaves pin null and yields nothing to
+                // measure from). Home coordinates also decide which campus of a
+                // multi-campus university gets used. Only gate when C07 was
+                // actually chosen; otherwise this step is optional as before.
+                onPressed: (_needsHome && pin == null) ? null : () {
                   Session.homeArea = (picked ?? addr.text).trim();
                   Session.homeLat = pin?.latitude;
                   Session.homeLng = pin?.longitude;
@@ -3855,10 +3947,12 @@ class _LocationScreenState extends State<LocationScreen> {
                       .catchError((_) => <String, dynamic>{});
                   Navigator.push(context, MaterialPageRoute(builder: (_) => ResultsScreen(criteria: widget.criteria)));
                 },
-                icon: const Icon(Icons.bolt, size: 18),
-                label: const Text('Show rank', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                icon: Icon(_needsHome && pin == null ? Icons.location_off_outlined : Icons.bolt, size: 18),
+                label: Text(_needsHome && pin == null ? 'Select your home location' : 'Show rank',
+                    style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: C.green, foregroundColor: Colors.white, elevation: 0,
+                  disabledBackgroundColor: C.sand, disabledForegroundColor: C.muted,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
                 ),
               ),
@@ -6419,13 +6513,10 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
                 _section('C23 · Minimum entry grade'),
                 _textField('Lowest grade you accept (e.g. Bs or Cs)', 'minGrade'),
 
-                _section('Contact & website'),
-                const Text('Shown to graduates on the ranking page — not scored, just informational.',
-                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
-                const SizedBox(height: 10),
-                _textField('Contact email', 'contactEmail'),
-                _textField('Contact phone', 'contactPhone'),
-                _textField('Website', 'website'),
+                // Contact email/phone/website moved to the staff member's own
+                // "Edit profile" sheet -- saveStaffCriteria can no longer touch
+                // those keys (the drivers carry them forward), so editing them
+                // here would have silently done nothing.
 
                 if (otherCriteria.isNotEmpty) ...[
                   _section('Other criteria'),

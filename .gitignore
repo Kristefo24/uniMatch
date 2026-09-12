@@ -11,3 +11,4 @@ app/android/build/
 app/android/.gradle/
 app/android/app/build/
 apkbuild.log
+webbuild.log

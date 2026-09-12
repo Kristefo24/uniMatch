@@ -203,10 +203,19 @@ app.get('/universities/:id/answers', wrap(async (req, res) => {
 // real values for.
 app.get('/criteria', wrap(async (_req, res) => {
   const [criteria, unis] = await Promise.all([db.listCriteria(), db.listUniversities()]);
-  res.json(criteria.map(c => ({
-    ...c,
-    hasData: unis.some(u => u.vals && Object.prototype.hasOwnProperty.call(u.vals, c.code)),
-  })));
+  res.json(criteria.map(c => {
+    // Highest value any university actually has for this criterion -- lets the
+    // client size an input to real data (the budget slider's ceiling) instead
+    // of a hardcoded guess. null when no university has a number for it.
+    const nums = unis
+      .map(u => u.vals && u.vals[c.code])
+      .filter(v => typeof v === 'number' && Number.isFinite(v));
+    return {
+      ...c,
+      hasData: unis.some(u => u.vals && Object.prototype.hasOwnProperty.call(u.vals, c.code)),
+      maxValue: nums.length ? Math.max(...nums) : null,
+    };
+  }));
 }));
 
 // The admin-managed subject-combination catalogue (e.g. PCB, MPC) — every A2
@@ -320,8 +329,8 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
   if (deptEligibleIds) {
     const deptMatches = ranked.filter(u => deptEligibleIds.has(u.id));
     let filtered;
-    // Exact-programme promotion: only boost to #1 when the score gap is small
-    // (≤0.15 cc). A large gap means the exact-programme university genuinely
+    // Exact-programme promotion: only boost to #1 when the score gap is under
+    // 5 points. A wider gap means the exact-programme university genuinely
     // scores much lower on the criteria the graduate chose — forcing it to #1
     // would hide a better-matching option. Instead, keep the cc-sorted order
     // and let the UI surface "Your programme" on whichever card has it, so
@@ -332,7 +341,10 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
       if (exactInDept.length && others2.length) {
         const bestExact = exactInDept[0]; // deptMatches is still cc-desc at this point
         const bestOther = others2[0];
-        const showProgrammeReason = bestExact.cc >= bestOther.cc - 0.15;
+        // Compare the scores the graduate actually sees (cc*100 rounded, exactly
+        // as main.dart renders them) so the rule is verifiable from the screen.
+        const shownScore = (u) => Math.round(u.cc * 100);
+        const showProgrammeReason = shownScore(bestOther) - shownScore(bestExact) < 5;
         if (showProgrammeReason) {
           // Small gap — promote the exact-programme university to #1
           filtered = [bestExact, ...deptMatches.filter(u => u.id !== bestExact.id)]
@@ -492,6 +504,15 @@ app.get('/staff/:uniId/combos-reached', auth(), requireStaffOfUniversity(), wrap
 }));
 app.put('/staff/:uniId/photo', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
   res.json(await db.updateUniversity(req.params.uniId, { photo: (req.body && req.body.photo) || null }));
+}));
+
+// The university's public contact details, edited from the staff member's own
+// "Edit profile" sheet. These are the single source of truth for the three
+// fields -- saveStaffCriteria deliberately can't touch them (see the drivers),
+// so a stale criteria screen can never wipe or revert what's set here.
+app.put('/staff/:uniId/contacts', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
+  const { contactEmail, contactPhone, website } = req.body || {};
+  res.json(await db.setUniversityContacts(req.params.uniId, { contactEmail, contactPhone, website }));
 }));
 app.get('/admin/report', auth(), requireRole('admin'), wrap(async (_req, res) => {
   res.json(await db.adminReport());

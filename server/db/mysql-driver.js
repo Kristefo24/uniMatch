@@ -205,6 +205,22 @@ async function hydrateUniversity(u) {
   };
 }
 
+// The three public contact fields live inside the criteria blob, but they're
+// owned by setUniversityContacts (the staff member's own Edit-profile sheet),
+// not by the criteria screen. saveStaffCriteria replaces that blob wholesale,
+// so carry them forward and ignore whatever the caller sent -- otherwise a
+// stale criteria screen would silently wipe or revert contacts edited
+// elsewhere. This makes the contacts endpoint the single source of truth.
+const CONTACT_KEYS = ['contactEmail', 'contactPhone', 'website'];
+function carryForwardContacts(criteria, previous) {
+  const merged = { ...criteria };
+  for (const k of CONTACT_KEYS) {
+    delete merged[k];
+    if (previous[k] !== undefined) merged[k] = previous[k];
+  }
+  return merged;
+}
+
 module.exports = {
   async init() {
     // Auto-apply schema so `npm start` works after just creating the empty DB.
@@ -525,11 +541,12 @@ module.exports = {
   // Merges just the contact email/phone into the existing criteria blob --
   // never replaces the whole thing, unlike saveStaffCriteria, since this is
   // called from signup which doesn't have (and mustn't wipe) the rest of it.
-  async setUniversityContacts(uniId, { contactEmail, contactPhone }) {
+  async setUniversityContacts(uniId, { contactEmail, contactPhone, website }) {
     const d = await this._staffData(uniId);
     d.criteria = { ...(d.criteria || {}) };
     if (contactEmail != null) d.criteria.contactEmail = contactEmail;
     if (contactPhone != null) d.criteria.contactPhone = contactPhone;
+    if (website != null) d.criteria.website = website;
     await this._saveStaffData(uniId, d);
     return d;
   },
@@ -647,7 +664,9 @@ module.exports = {
   },
   async saveStaffCriteria(uniId, criteria) {
     const p = await getPool();
-    const d = await this._staffData(uniId); d.criteria = criteria;
+    const d = await this._staffData(uniId);
+    criteria = carryForwardContacts(criteria, d.criteria || {});
+    d.criteria = criteria;
     await this._saveStaffData(uniId, d);
     const keep = new Set(Object.keys(criteria).filter(k => /^C\d+$/.test(k) && typeof criteria[k] === 'number'));
     // Clear any previously-stored Cxx value whose code dropped out of this

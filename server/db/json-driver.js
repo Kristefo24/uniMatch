@@ -156,6 +156,22 @@ function staffExtras(uniId) {
   };
 }
 
+// The three public contact fields live inside the criteria blob, but they're
+// owned by setUniversityContacts (the staff member's own Edit-profile sheet),
+// not by the criteria screen. saveStaffCriteria replaces that blob wholesale,
+// so carry them forward and ignore whatever the caller sent -- otherwise a
+// stale criteria screen would silently wipe or revert contacts edited
+// elsewhere. This makes the contacts endpoint the single source of truth.
+const CONTACT_KEYS = ['contactEmail', 'contactPhone', 'website'];
+function carryForwardContacts(criteria, previous) {
+  const merged = { ...criteria };
+  for (const k of CONTACT_KEYS) {
+    delete merged[k];
+    if (previous[k] !== undefined) merged[k] = previous[k];
+  }
+  return merged;
+}
+
 module.exports = {
   async init() { load(); },
 
@@ -256,12 +272,13 @@ module.exports = {
   // Merges just the contact email/phone into the existing criteria blob --
   // never replaces the whole thing, unlike saveStaffCriteria, since this is
   // called from signup which doesn't have (and mustn't wipe) the rest of it.
-  async setUniversityContacts(uniId, { contactEmail, contactPhone }) {
+  async setUniversityContacts(uniId, { contactEmail, contactPhone, website }) {
     db.staffData = db.staffData || {};
     const existing = db.staffData[uniId] || { campuses: [], combos: {}, criteria: {} };
     const criteria = { ...(existing.criteria || {}) };
     if (contactEmail != null) criteria.contactEmail = contactEmail;
     if (contactPhone != null) criteria.contactPhone = contactPhone;
+    if (website != null) criteria.website = website;
     db.staffData[uniId] = { ...existing, criteria };
     save();
     return db.staffData[uniId];
@@ -326,6 +343,7 @@ module.exports = {
   },
   async saveStaffCriteria(uniId, criteria) {
     db.staffData = db.staffData || {};
+    criteria = carryForwardContacts(criteria, (db.staffData[uniId] || {}).criteria || {});
     db.staffData[uniId] = { ...(db.staffData[uniId] || { campuses:[], combos:{} }), criteria };
     const u = db.universities.find(x => x.id === uniId);
     if (u) {
