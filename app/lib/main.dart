@@ -707,125 +707,137 @@ Future<void> _editProfile(BuildContext context) async {
     shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
     builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) => Padding(
       padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
-      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Edit profile', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
-        const SizedBox(height: 16),
-        Center(
-          child: GestureDetector(
-            onTap: uploadingPhoto ? null : () async {
-              try {
-                final file = await ImagePicker().pickImage(
-                    source: ImageSource.gallery, maxWidth: 320, maxHeight: 320, imageQuality: 70);
-                if (file == null) return;
-                final bytes = await file.readAsBytes();
-                final ext = file.name.toLowerCase().endsWith('.png') ? 'png' : 'jpeg';
-                final dataUri = 'data:image/$ext;base64,${base64Encode(bytes)}';
-                setSheet(() { photo = dataUri; uploadingPhoto = true; });
-                try {
-                  // Auto-saves immediately on pick — the photo doesn't wait for the
-                  // "Save" button, and every avatar shown app-wide (any role) updates
-                  // right away via _bumpAvatar(). For staff, the same photo also
-                  // becomes their university's photo — one upload, shown everywhere
-                  // a photo is needed, no separate "institution photo" control.
-                  final jobs = <Future>[Api.updateMe(photo: dataUri)];
-                  if (Session.role == 'staff' && Session.uniId != null) {
-                    jobs.add(Api.updateUniversityPhoto(Session.uniId!, dataUri));
-                  }
-                  await Future.wait(jobs);
-                  Session.photo = dataUri;
-                  _bumpAvatar();
-                  if (ctx.mounted) toast(ctx, 'Photo updated');
-                } catch (e) {
-                  if (ctx.mounted) toast(ctx, 'Could not save photo: $e');
-                } finally {
-                  if (ctx.mounted) setSheet(() => uploadingPhoto = false);
-                }
-              } catch (e) {
-                if (ctx.mounted) toast(ctx, 'Could not open photo picker: $e');
-              }
-            },
-            child: Stack(children: [
-              CircleAvatar(
-                radius: 40,
-                backgroundColor: C.green,
-                backgroundImage: _decodeAvatarPhoto(photo),
-                child: _decodeAvatarPhoto(photo) == null
-                    ? Text(Session.initial, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w700))
-                    : null,
-              ),
-              if (uploadingPhoto)
-                const Positioned.fill(
-                  child: CircleAvatar(
-                    radius: 40,
-                    backgroundColor: Color(0x99000000),
-                    child: SizedBox(width: 24, height: 24,
-                        child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white)),
+      // Capped + scrollable so the sheet can never grow past the screen
+      // (or past what's left of it once the keyboard is up) and strand the
+      // Save button off the bottom -- same fix as the Add-campus sheet.
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.85),
+        // PINNED: fields scroll, the Save button stays put at the bottom.
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Flexible( // PINNED-SKIP
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Edit profile', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
+                const SizedBox(height: 16),
+                Center(
+                  child: GestureDetector(
+                    onTap: uploadingPhoto ? null : () async {
+                      try {
+                        final file = await ImagePicker().pickImage(
+                            source: ImageSource.gallery, maxWidth: 320, maxHeight: 320, imageQuality: 70);
+                        if (file == null) return;
+                        final bytes = await file.readAsBytes();
+                        final ext = file.name.toLowerCase().endsWith('.png') ? 'png' : 'jpeg';
+                        final dataUri = 'data:image/$ext;base64,${base64Encode(bytes)}';
+                        setSheet(() { photo = dataUri; uploadingPhoto = true; });
+                        try {
+                          // Auto-saves immediately on pick — the photo doesn't wait for the
+                          // "Save" button, and every avatar shown app-wide (any role) updates
+                          // right away via _bumpAvatar(). For staff, the same photo also
+                          // becomes their university's photo — one upload, shown everywhere
+                          // a photo is needed, no separate "institution photo" control.
+                          final jobs = <Future>[Api.updateMe(photo: dataUri)];
+                          if (Session.role == 'staff' && Session.uniId != null) {
+                            jobs.add(Api.updateUniversityPhoto(Session.uniId!, dataUri));
+                          }
+                          await Future.wait(jobs);
+                          Session.photo = dataUri;
+                          _bumpAvatar();
+                          if (ctx.mounted) toast(ctx, 'Photo updated');
+                        } catch (e) {
+                          if (ctx.mounted) toast(ctx, 'Could not save photo: $e');
+                        } finally {
+                          if (ctx.mounted) setSheet(() => uploadingPhoto = false);
+                        }
+                      } catch (e) {
+                        if (ctx.mounted) toast(ctx, 'Could not open photo picker: $e');
+                      }
+                    },
+                    child: Stack(children: [
+                      CircleAvatar(
+                        radius: 40,
+                        backgroundColor: C.green,
+                        backgroundImage: _decodeAvatarPhoto(photo),
+                        child: _decodeAvatarPhoto(photo) == null
+                            ? Text(Session.initial, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w700))
+                            : null,
+                      ),
+                      if (uploadingPhoto)
+                        const Positioned.fill(
+                          child: CircleAvatar(
+                            radius: 40,
+                            backgroundColor: Color(0x99000000),
+                            child: SizedBox(width: 24, height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white)),
+                          ),
+                        ),
+                      Positioned(
+                        right: 0, bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: const BoxDecoration(color: C.gold, shape: BoxShape.circle),
+                          child: const Icon(Icons.camera_alt, size: 16, color: C.greenDark),
+                        ),
+                      ),
+                    ]),
                   ),
                 ),
-              Positioned(
-                right: 0, bottom: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: const BoxDecoration(color: C.gold, shape: BoxShape.circle),
-                  child: const Icon(Icons.camera_alt, size: 16, color: C.greenDark),
-                ),
-              ),
-            ]),
+                const SizedBox(height: 16),
+                TextField(controller: name, decoration: fieldDeco('Full name')),
+                const SizedBox(height: 12),
+                TextField(enabled: false, decoration: fieldDeco(Session.email)),
+                if (Session.role == 'student') ...[
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: track,
+                    isExpanded: true,
+                    decoration: fieldDeco('A2 combination'),
+                    hint: const Text('Select your combination'),
+                    items: combos.map((c) => DropdownMenuItem(
+                        value: c['code'] as String,
+                        child: Text('${c['code']} (${List<String>.from(c['subjects'] ?? const []).join(' / ')})'))).toList(),
+                    onChanged: (v) => setSheet(() => track = v),
+                  ),
+                ],
+                if (Session.role == 'staff' && Session.uniId != null) ...[
+                  const SizedBox(height: 18),
+                  const Text('UNIVERSITY CONTACTS', style: TextStyle(
+                      fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
+                  const SizedBox(height: 4),
+                  const Text('Shown to graduates on the ranking page.',
+                      style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                  const SizedBox(height: 10),
+                  TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
+                  const SizedBox(height: 12),
+                  TextField(controller: contactPhone, decoration: fieldDeco('+250 7xx xxx xxx')),
+                  const SizedBox(height: 12),
+                  TextField(controller: website, decoration: fieldDeco('www.university.ac.rw')),
+                ],
+              ]),
+            ),
           ),
-        ),
-        const SizedBox(height: 16),
-        TextField(controller: name, decoration: fieldDeco('Full name')),
-        const SizedBox(height: 12),
-        TextField(enabled: false, decoration: fieldDeco(Session.email)),
-        if (Session.role == 'student') ...[
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: track,
-            isExpanded: true,
-            decoration: fieldDeco('A2 combination'),
-            hint: const Text('Select your combination'),
-            items: combos.map((c) => DropdownMenuItem(
-                value: c['code'] as String,
-                child: Text('${c['code']} (${List<String>.from(c['subjects'] ?? const []).join(' / ')})'))).toList(),
-            onChanged: (v) => setSheet(() => track = v),
-          ),
-        ],
-        if (Session.role == 'staff' && Session.uniId != null) ...[
-          const SizedBox(height: 18),
-          const Text('UNIVERSITY CONTACTS', style: TextStyle(
-              fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
-          const SizedBox(height: 4),
-          const Text('Shown to graduates on the ranking page.',
-              style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
-          const SizedBox(height: 10),
-          TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
-          const SizedBox(height: 12),
-          TextField(controller: contactPhone, decoration: fieldDeco('+250 7xx xxx xxx')),
-          const SizedBox(height: 12),
-          TextField(controller: website, decoration: fieldDeco('www.university.ac.rw')),
-        ],
-        const SizedBox(height: 20),
-        primaryButton('Save', () async {
-          setSheet(() => saving = true);
-          try {
-            await Api.updateMe(name: name.text.trim(), track: track, photo: photo);
-            if (Session.role == 'staff' && Session.uniId != null) {
-              await Api.updateUniversityContacts(Session.uniId!,
-                  contactEmail: contactEmail.text.trim(),
-                  contactPhone: contactPhone.text.trim(),
-                  website: website.text.trim());
-            }
-            Session.name = name.text.trim();
-            Session.track = track;
-            Session.photo = photo;
-            _bumpAvatar();
-            if (ctx.mounted) Navigator.pop(ctx);
-          } catch (e) {
-            setSheet(() => saving = false);
-            if (ctx.mounted) toast(ctx, e.toString());
-          }
-        }, loading: saving),
-      ]),
+              primaryButton('Save', () async {
+                setSheet(() => saving = true);
+                try {
+                  await Api.updateMe(name: name.text.trim(), track: track, photo: photo);
+                  if (Session.role == 'staff' && Session.uniId != null) {
+                    await Api.updateUniversityContacts(Session.uniId!,
+                        contactEmail: contactEmail.text.trim(),
+                        contactPhone: contactPhone.text.trim(),
+                        website: website.text.trim());
+                  }
+                  Session.name = name.text.trim();
+                  Session.track = track;
+                  Session.photo = photo;
+                  _bumpAvatar();
+                  if (ctx.mounted) Navigator.pop(ctx);
+                } catch (e) {
+                  setSheet(() => saving = false);
+                  if (ctx.mounted) toast(ctx, e.toString());
+                }
+              }, loading: saving),
+        ]),
+      ),
     )),
   );
 }
@@ -950,6 +962,15 @@ class UniMatchApp extends StatelessWidget {
               fontSize: 19, fontWeight: FontWeight.w600, color: C.ink, letterSpacing: -0.3),
         ),
       ),
+      // Tapping any blank area closes the keyboard. Done once here so it
+      // applies to every screen, sheet and dialog. `translucent` means this
+      // only catches taps that hit nothing else -- fields, buttons and list
+      // rows still win the gesture arena, so no existing tap changes.
+      builder: (context, child) => GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: child,
+      ),
       home: const OnboardingScreen(),
       navigatorObservers: [routeObserver],
     );
@@ -986,6 +1007,21 @@ Widget primaryButton(String label, VoidCallback? onTap, {bool loading = false}) 
     ),
   );
 }
+
+/// The action area of a form screen, pinned to the bottom so the submit button
+/// is always reachable without scrolling -- including while the keyboard is up,
+/// since the Scaffold shrinks around it. Matches the bar the criteria and
+/// location steps already use. Pass the submit button plus any links that
+/// belong with it (e.g. "Forgot password?").
+Widget formFooter(List<Widget> children) => Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(24, 10, 24, 14),
+      decoration: const BoxDecoration(
+        color: C.cream,
+        border: Border(top: BorderSide(color: C.border)),
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+    );
 
 InputDecoration fieldDeco(String hint, {IconData? icon}) => InputDecoration(
       hintText: hint,
@@ -1174,40 +1210,42 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       appBar: AppBar(backgroundColor: C.cream, elevation: 0, foregroundColor: C.ink),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Welcome back', style: head(28)),
-              const SizedBox(height: 6),
-              const Text('Log in — you\'ll land on the right home for your role.',
-                  style: TextStyle(color: C.muted, fontSize: 14)),
-              const SizedBox(height: 28),
-              TextField(controller: email, decoration: fieldDeco('Email', icon: Icons.mail_outline)),
-              const SizedBox(height: 14),
-              TextField(controller: pass, obscureText: true, decoration: fieldDeco('Password', icon: Icons.lock_outline)),
-              const SizedBox(height: 24),
-              primaryButton('Log in', _login, loading: loading),
-              const SizedBox(height: 8),
-              Center(
-                child: TextButton(
-                  onPressed: () => Navigator.push(
-                      context, MaterialPageRoute(builder: (_) => const ForgotPasswordScreen())),
-                  child: const Text('Forgot password?', style: TextStyle(color: C.muted)),
-                ),
+        child: Column(children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Welcome back', style: head(28)),
+                  const SizedBox(height: 6),
+                  const Text('Log in — you\'ll land on the right home for your role.',
+                      style: TextStyle(color: C.muted, fontSize: 14)),
+                  const SizedBox(height: 28),
+                  TextField(controller: email, decoration: fieldDeco('Email', icon: Icons.mail_outline)),
+                  const SizedBox(height: 14),
+                  TextField(controller: pass, obscureText: true, decoration: fieldDeco('Password', icon: Icons.lock_outline)),
+                ],
               ),
-              const SizedBox(height: 8),
-              Center(
-                child: TextButton(
-                  onPressed: () => Navigator.push(
-                      context, MaterialPageRoute(builder: (_) => const SignupScreen())),
-                  child: const Text('New here? Create an account', style: TextStyle(color: C.green)),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
+          formFooter([
+            primaryButton('Log in', _login, loading: loading),
+            const SizedBox(height: 4),
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              TextButton(
+                onPressed: () => Navigator.push(
+                    context, MaterialPageRoute(builder: (_) => const ForgotPasswordScreen())),
+                child: const Text('Forgot password?', style: TextStyle(color: C.muted)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.push(
+                    context, MaterialPageRoute(builder: (_) => const SignupScreen())),
+                child: const Text('Create an account', style: TextStyle(color: C.green)),
+              ),
+            ]),
+          ]),
+        ]),
       ),
     );
   }
@@ -1261,19 +1299,22 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     return Scaffold(
       appBar: AppBar(),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Forgot password', style: head(28)),
-            const SizedBox(height: 6),
-            const Text('Enter your email and we\'ll send a reset code. Staff resets are re-confirmed by an admin.',
-                style: TextStyle(color: C.muted, fontSize: 14)),
-            const SizedBox(height: 24),
-            TextField(controller: email, decoration: fieldDeco('Email', icon: Icons.mail_outline)),
-            const SizedBox(height: 24),
-            primaryButton('Send reset code', _submit, loading: loading),
-          ]),
-        ),
+        child: Column(children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Forgot password', style: head(28)),
+                const SizedBox(height: 6),
+                const Text('Enter your email and we\'ll send a reset code. Staff resets are re-confirmed by an admin.',
+                    style: TextStyle(color: C.muted, fontSize: 14)),
+                const SizedBox(height: 24),
+                TextField(controller: email, decoration: fieldDeco('Email', icon: Icons.mail_outline)),
+              ]),
+            ),
+          ),
+          formFooter([primaryButton('Send reset code', _submit, loading: loading)]),
+        ]),
       ),
     );
   }
@@ -1360,6 +1401,8 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
     return Scaffold(
       appBar: AppBar(),
       body: SafeArea(
+        child: Column(children: [
+        Expanded(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1389,33 +1432,37 @@ class _OtpResetScreenState extends State<OtpResetScreen> {
             TextField(controller: pass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
             const SizedBox(height: 16),
             TextField(controller: confirmPass, obscureText: true, decoration: fieldDeco('Confirm new password', icon: Icons.lock_outline)),
-            const SizedBox(height: 24),
-            primaryButton('Reset password', () async {
-              if (otp.text.trim().isEmpty || pass.text.isEmpty || confirmPass.text.isEmpty) {
-                toast(context, 'Enter the code, new password and confirmation');
-                return;
-              }
-              if (pass.text != confirmPass.text) {
-                toast(context, 'Passwords do not match');
-                return;
-              }
-              if (pass.text.length < 8) {
-                toast(context, 'Password must be at least 8 characters.');
-                return;
-              }
-              setState(() => submitting = true);
-              try {
-                await Api.resetPassword(widget.email, otp.text.trim(), pass.text);
-                if (!mounted) return;
-                toast(context, 'Password reset — you can log in now.');
-                Navigator.pushAndRemoveUntil(context,
-                    MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
-              } catch (e) {
-                if (mounted) { setState(() => submitting = false); toast(context, e.toString()); }
-              }
-            }, loading: submitting),
-          ]),
+        ],
+          ),
         ),
+        ),
+        formFooter([
+              primaryButton('Reset password', () async {
+                if (otp.text.trim().isEmpty || pass.text.isEmpty || confirmPass.text.isEmpty) {
+                  toast(context, 'Enter the code, new password and confirmation');
+                  return;
+                }
+                if (pass.text != confirmPass.text) {
+                  toast(context, 'Passwords do not match');
+                  return;
+                }
+                if (pass.text.length < 8) {
+                  toast(context, 'Password must be at least 8 characters.');
+                  return;
+                }
+                setState(() => submitting = true);
+                try {
+                  await Api.resetPassword(widget.email, otp.text.trim(), pass.text);
+                  if (!mounted) return;
+                  toast(context, 'Password reset — you can log in now.');
+                  Navigator.pushAndRemoveUntil(context,
+                      MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
+                } catch (e) {
+                  if (mounted) { setState(() => submitting = false); toast(context, e.toString()); }
+                }
+              }, loading: submitting),
+        ]),
+        ]),
       ),
     );
   }
@@ -1547,6 +1594,8 @@ class _SignupScreenState extends State<SignupScreen> {
     return Scaffold(
       appBar: AppBar(backgroundColor: C.cream, elevation: 0, foregroundColor: C.ink),
       body: SafeArea(
+        child: Column(children: [
+        Expanded(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
           child: Column(
@@ -1653,19 +1702,19 @@ class _SignupScreenState extends State<SignupScreen> {
 
               _label('PASSWORD'),
               TextField(controller: pass, obscureText: true, decoration: fieldDeco('8+ characters')),
-              const SizedBox(height: 24),
-              primaryButton('Continue', _signup, loading: loading),
-              const SizedBox(height: 12),
-              Center(
-                child: TextButton(
-                  onPressed: () => Navigator.pushReplacement(
-                      context, MaterialPageRoute(builder: (_) => const LoginScreen())),
-                  child: const Text('Already have an account? Log in', style: TextStyle(color: C.green)),
-                ),
-              ),
             ],
           ),
         ),
+        ),
+        formFooter([
+          primaryButton('Continue', _signup, loading: loading),
+          TextButton(
+            onPressed: () => Navigator.pushReplacement(
+                context, MaterialPageRoute(builder: (_) => const LoginScreen())),
+            child: const Text('Already have an account? Log in', style: TextStyle(color: C.green)),
+          ),
+        ]),
+        ]),
       ),
     );
   }
@@ -1754,7 +1803,11 @@ class _VerifyScreenState extends State<VerifyScreen> {
     return Scaffold(
       appBar: AppBar(backgroundColor: C.cream, elevation: 0, foregroundColor: C.ink),
       body: SafeArea(
-        child: Padding(
+        // The code field scrolls; "Verify & continue" is pinned below it, so
+        // the numeric keypad can never push the action out of reach.
+        child: Column(children: [
+        Expanded(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1776,18 +1829,18 @@ class _VerifyScreenState extends State<VerifyScreen> {
                 child: Text(seconds > 0 ? 'Code expires in $mmss' : 'Code expired — resend it',
                     style: TextStyle(color: seconds > 0 ? C.muted : Colors.red, fontWeight: FontWeight.w600)),
               ),
-              const SizedBox(height: 24),
-              primaryButton('Verify & continue', _verify, loading: verifying),
-              const SizedBox(height: 12),
-              Center(
-                child: TextButton(
-                  onPressed: seconds == 0 && !resending ? _resend : null,
-                  child: Text(resending ? 'Sending…' : 'Resend code'),
-                ),
-              ),
             ],
           ),
         ),
+        ),
+        formFooter([
+          primaryButton('Verify & continue', _verify, loading: verifying),
+          TextButton(
+            onPressed: seconds == 0 && !resending ? _resend : null,
+            child: Text(resending ? 'Sending…' : 'Resend code'),
+          ),
+        ]),
+        ]),
       ),
     );
   }
@@ -1837,19 +1890,22 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Change password')),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const SizedBox(height: 8),
-            TextField(controller: current, obscureText: true, decoration: fieldDeco('Current password', icon: Icons.lock_outline)),
-            const SizedBox(height: 16),
-            TextField(controller: newPass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
-            const SizedBox(height: 16),
-            TextField(controller: confirm, obscureText: true, decoration: fieldDeco('Confirm new password', icon: Icons.lock_outline)),
-            const SizedBox(height: 24),
-            primaryButton('Change password', _submit, loading: loading),
-          ]),
-        ),
+        child: Column(children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const SizedBox(height: 8),
+                TextField(controller: current, obscureText: true, decoration: fieldDeco('Current password', icon: Icons.lock_outline)),
+                const SizedBox(height: 16),
+                TextField(controller: newPass, obscureText: true, decoration: fieldDeco('New password', icon: Icons.lock_outline)),
+                const SizedBox(height: 16),
+                TextField(controller: confirm, obscureText: true, decoration: fieldDeco('Confirm new password', icon: Icons.lock_outline)),
+              ]),
+            ),
+          ),
+          formFooter([primaryButton('Change password', _submit, loading: loading)]),
+        ]),
       ),
     );
   }
@@ -4545,7 +4601,8 @@ class _DetailScreenState extends State<DetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       drawer: a2Drawer(context),
-      appBar: a2AppBar(context, widget.name, back: true),
+      // No Scaffold appBar -- the university header below is a SliverAppBar
+      // that collapses into one, carrying the same back/menu/profile actions.
       body: FutureBuilder<Map<String, dynamic>>(
         future: _future,
         builder: (ctx, snap) {
@@ -4591,269 +4648,326 @@ class _DetailScreenState extends State<DetailScreen> {
             contextualRows.add(MapEntry(labelByCode[k] ?? _prettyKey(k), v));
           });
 
-          return ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft, end: Alignment.bottomRight,
-                    colors: [crest, Color.lerp(crest, Colors.black, 0.35)!]),
+          // The university header is a collapsing app bar: full gradient with
+          // logo, name and stats at the top of the page, shrinking to a compact
+          // titled bar as the graduate scrolls, so the university stays
+          // identifiable without permanently occupying a quarter of the screen.
+          // Apply/Shortlist pinned below the scroll area so a graduate never has
+          // to scroll the whole page to act on it.
+          return Column(children: [
+            Expanded(
+              child: CustomScrollView(
+            slivers: [
+              SliverAppBar(
+                pinned: true,
+                expandedHeight: 196,
+                backgroundColor: crest,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                leading: IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: () => Navigator.maybePop(context),
                 ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
-                    universityLogo(u, size: 52, radius: 13, fontSize: 15,
-                        bg: const Color(0xFFF5E7B8), textColor: crest),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text('${u['name'] ?? widget.name}', style: GoogleFonts.bricolageGrotesque(
-                        color: const Color(0xFFFBF8F3), fontSize: 20, fontWeight: FontWeight.w500, height: 1.15))),
-                  ]),
-                  const SizedBox(height: 18),
-                  Row(children: [
-                    _heroStat('${campuses.length}', 'CAMPUSES'),
-                    _heroDiv(),
-                    _heroStat(programmeCount != null ? '$programmeCount' : '—', 'PROGRAMMES'),
-                    _heroDiv(),
-                    _heroStat(ratingCount > 0 ? avgRating!.toStringAsFixed(1) : '—', 'RATING'),
-                  ]),
-                ]),
+                actions: [
+                  Builder(builder: (ctx) => IconButton(
+                      icon: const Icon(Icons.menu), onPressed: () => Scaffold.of(ctx).openDrawer())),
+                  profileAction(context),
+                ],
+                // Only titled once collapsed -- while expanded the name is
+                // already right there in the hero, and showing both reads as a
+                // duplicate.
+                title: LayoutBuilder(builder: (ctx, _) {
+                  final settings = ctx.dependOnInheritedWidgetOfExactType<FlexibleSpaceBarSettings>();
+                  final collapsed = settings == null ||
+                      settings.currentExtent <= settings.minExtent + 8;
+                  return AnimatedOpacity(
+                    duration: const Duration(milliseconds: 150),
+                    opacity: collapsed ? 1 : 0,
+                    child: Text('${u['name'] ?? widget.name}',
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.bricolageGrotesque(
+                            color: Colors.white, fontSize: 17, fontWeight: FontWeight.w500)),
+                  );
+                }),
+                flexibleSpace: FlexibleSpaceBar(
+                  collapseMode: CollapseMode.pin,
+                  background: SafeArea(
+                    bottom: false,
+                    child: SingleChildScrollView(
+                      physics: const NeverScrollableScrollPhysics(),
+                      child: Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft, end: Alignment.bottomRight,
+                            colors: [crest, Color.lerp(crest, Colors.black, 0.35)!]),
+                        ),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(children: [
+                            universityLogo(u, size: 52, radius: 13, fontSize: 15,
+                                bg: const Color(0xFFF5E7B8), textColor: crest),
+                            const SizedBox(width: 12),
+                            Expanded(child: Text('${u['name'] ?? widget.name}', style: GoogleFonts.bricolageGrotesque(
+                                color: const Color(0xFFFBF8F3), fontSize: 20, fontWeight: FontWeight.w500, height: 1.15))),
+                          ]),
+                          const SizedBox(height: 18),
+                          Row(children: [
+                            _heroStat('${campuses.length}', 'CAMPUSES'),
+                            _heroDiv(),
+                            _heroStat(programmeCount != null ? '$programmeCount' : '—', 'PROGRAMMES'),
+                            _heroDiv(),
+                            _heroStat(ratingCount > 0 ? avgRating!.toStringAsFixed(1) : '—', 'RATING'),
+                          ]),
+                        ]),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              if (vals['C01'] != null || staffAnswers['accommodation'] != null)
+              SliverList(
+                delegate: SliverChildListDelegate([
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 14),
-                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    if (vals['C01'] != null)
-                      _infoCard('TUITION', _fmtRwf(vals['C01'] as num), Icons.payments_outlined),
-                    if (vals['C01'] != null && staffAnswers['accommodation'] != null)
-                      const SizedBox(width: 10),
-                    if (staffAnswers['accommodation'] != null)
-                      _infoCard('ACCOMMODATION', staffAnswers['accommodation'] == true ? 'On-campus' : 'Off-campus',
-                          Icons.home_outlined),
-                  ]),
-                ),
-              const Text('Campuses in Gasabo', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-              const SizedBox(height: 10),
-              if (campuses.isEmpty)
-                const Text('No campuses published yet.', style: TextStyle(color: C.muted, fontSize: 12))
-              else
-                ...campuses.map((c) {
-                  // Programmes offered at this specific campus, grouped by
-                  // department -- `allProgrammes` already carries synthetic
-                  // placeholder rows for a dept with no explicitly named
-                  // programme (see listProgrammes()), so every dept the
-                  // campus offers shows up here, real name or not.
-                  final campusProgs = allProgrammes.where((p) =>
-                      (p as Map)['universityId'] == u['id'] && p['campus'] == c['name']);
-                  final byDept = <String, List<String>>{};
-                  for (final p in campusProgs) {
-                    final dept = '${(p as Map)['dept'] ?? ''}';
-                    if (dept.isEmpty) continue;
-                    final name = '${p['name'] ?? ''}';
-                    final list = byDept.putIfAbsent(dept, () => []);
-                    if (!list.any((n) => n.toLowerCase() == name.toLowerCase())) list.add(name);
-                  }
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                        color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Row(children: [
-                        const Icon(Icons.location_on_outlined, color: C.green, size: 20),
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                if (vals['C01'] != null || staffAnswers['accommodation'] != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      if (vals['C01'] != null)
+                        _infoCard('TUITION', _fmtRwf(vals['C01'] as num), Icons.payments_outlined),
+                      if (vals['C01'] != null && staffAnswers['accommodation'] != null)
                         const SizedBox(width: 10),
-                        Text(c['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
+                      if (staffAnswers['accommodation'] != null)
+                        _infoCard('ACCOMMODATION', staffAnswers['accommodation'] == true ? 'On-campus' : 'Off-campus',
+                            Icons.home_outlined),
+                    ]),
+                  ),
+                const Text('Campuses in Gasabo', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                const SizedBox(height: 10),
+                if (campuses.isEmpty)
+                  const Text('No campuses published yet.', style: TextStyle(color: C.muted, fontSize: 12))
+                else
+                  ...campuses.map((c) {
+                    // Programmes offered at this specific campus, grouped by
+                    // department -- `allProgrammes` already carries synthetic
+                    // placeholder rows for a dept with no explicitly named
+                    // programme (see listProgrammes()), so every dept the
+                    // campus offers shows up here, real name or not.
+                    final campusProgs = allProgrammes.where((p) =>
+                        (p as Map)['universityId'] == u['id'] && p['campus'] == c['name']);
+                    final byDept = <String, List<String>>{};
+                    for (final p in campusProgs) {
+                      final dept = '${(p as Map)['dept'] ?? ''}';
+                      if (dept.isEmpty) continue;
+                      final name = '${p['name'] ?? ''}';
+                      final list = byDept.putIfAbsent(dept, () => []);
+                      if (!list.any((n) => n.toLowerCase() == name.toLowerCase())) list.add(name);
+                    }
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                          color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Row(children: [
+                          const Icon(Icons.location_on_outlined, color: C.green, size: 20),
+                          const SizedBox(width: 10),
+                          Text(c['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
+                        ]),
+                        if (byDept.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          ...byDept.entries.map((e) => Padding(
+                                padding: const EdgeInsets.only(top: 6),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Text(e.key.toUpperCase(), style: const TextStyle(
+                                      color: C.muted, fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+                                  const SizedBox(height: 5),
+                                  Wrap(spacing: 6, runSpacing: 6, children: e.value.map((n) => Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                        child: Text(n, style: const TextStyle(
+                                            fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                      )).toList()),
+                                ]),
+                              )),
+                        ],
                       ]),
-                      if (byDept.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        ...byDept.entries.map((e) => Padding(
-                              padding: const EdgeInsets.only(top: 6),
-                              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                Text(e.key.toUpperCase(), style: const TextStyle(
-                                    color: C.muted, fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
-                                const SizedBox(height: 5),
-                                Wrap(spacing: 6, runSpacing: 6, children: e.value.map((n) => Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                      decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
-                                      child: Text(n, style: const TextStyle(
-                                          fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
-                                    )).toList()),
-                              ]),
-                            )),
-                      ],
+                    );
+                  }),
+                const SizedBox(height: 12),
+                Builder(builder: (_) {
+                  final campusPins = u['campusPins'] as Map?;
+                  if (campusPins == null || campusPins.isEmpty) return const SizedBox.shrink();
+                  final campusName = resolveDisplayCampusName(u, allProgrammes);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Getting there', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                      const SizedBox(height: 8),
+                      CampusDistancesCard(
+                        campusPins: Map<String, dynamic>.from(campusPins),
+                        initialCampusName: campusName,
+                      ),
                     ]),
                   );
                 }),
-              const SizedBox(height: 12),
-              Builder(builder: (_) {
-                final campusPins = u['campusPins'] as Map?;
-                if (campusPins == null || campusPins.isEmpty) return const SizedBox.shrink();
-                final campusName = resolveDisplayCampusName(u, allProgrammes);
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Getting there', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-                    const SizedBox(height: 8),
-                    CampusDistancesCard(
-                      campusPins: Map<String, dynamic>.from(campusPins),
-                      initialCampusName: campusName,
-                    ),
-                  ]),
-                );
-              }),
-              if (_eligibilityBox() != null) _eligibilityBox()!,
-              const SizedBox(height: 8),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                const Text('All criteria', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-                Text('${displayCriteria.length} total', style: const TextStyle(color: C.muted, fontSize: 11)),
-              ]),
-              const SizedBox(height: 10),
-              if (displayCriteria.isEmpty)
-                const Text('Loading criteria…', style: TextStyle(color: C.muted, fontSize: 12))
-              else
-                ...categories.asMap().entries.expand<Widget>((entry) {
-                  final catColor = _kCategoryPalette[entry.key % _kCategoryPalette.length];
-                  final items = byCategory[entry.value]!;
-                  return [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12, bottom: 6),
-                      child: Text(entry.value.toUpperCase(), style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor)),
-                    ),
-                    ...items.map((c) {
-                      final code = c['code'] as String;
-                      final value = _valueForCode(code, vals, staffAnswers, kmHome);
-                      final names = code == 'C02'
-                          ? List<String>.from(staffAnswers['partnerSchools'] ?? const [])
-                          : code == 'C11'
-                              ? List<String>.from(staffAnswers['companies'] ?? const [])
-                              : code == 'C17'
-                                  ? List<String>.from(staffAnswers['healthPartners'] ?? const [])
-                                  : code == 'C12'
-                                      ? List<Map>.from(staffAnswers['cohorts'] ?? const [])
-                                          .map((c) => '${c['period']} · ${c['pct']}%').toList()
-                                      : const <String>[];
-                      final busKm = code == 'C09' ? staffAnswers['schoolToBusKm'] as num? : null;
-                      final motoKm = code == 'C09' ? staffAnswers['schoolToMotoKm'] as num? : null;
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                            color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                if (_eligibilityBox() != null) _eligibilityBox()!,
+                const SizedBox(height: 8),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  const Text('All criteria', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                  Text('${displayCriteria.length} total', style: const TextStyle(color: C.muted, fontSize: 11)),
+                ]),
+                const SizedBox(height: 10),
+                if (displayCriteria.isEmpty)
+                  const Text('Loading criteria…', style: TextStyle(color: C.muted, fontSize: 12))
+                else
+                  ...categories.asMap().entries.expand<Widget>((entry) {
+                    final catColor = _kCategoryPalette[entry.key % _kCategoryPalette.length];
+                    final items = byCategory[entry.value]!;
+                    return [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12, bottom: 6),
+                        child: Text(entry.value.toUpperCase(), style: TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: catColor)),
+                      ),
+                      ...items.map((c) {
+                        final code = c['code'] as String;
+                        final value = _valueForCode(code, vals, staffAnswers, kmHome);
+                        final names = code == 'C02'
+                            ? List<String>.from(staffAnswers['partnerSchools'] ?? const [])
+                            : code == 'C11'
+                                ? List<String>.from(staffAnswers['companies'] ?? const [])
+                                : code == 'C17'
+                                    ? List<String>.from(staffAnswers['healthPartners'] ?? const [])
+                                    : code == 'C12'
+                                        ? List<Map>.from(staffAnswers['cohorts'] ?? const [])
+                                            .map((c) => '${c['period']} · ${c['pct']}%').toList()
+                                        : const <String>[];
+                        final busKm = code == 'C09' ? staffAnswers['schoolToBusKm'] as num? : null;
+                        final motoKm = code == 'C09' ? staffAnswers['schoolToMotoKm'] as num? : null;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                              color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Expanded(
+                                child: Text('${c['label']}',
+                                    style: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
+                              ),
+                              const SizedBox(width: 12),
+                              Flexible(
+                                child: Text(value != null ? _fmtAnswer(value) : '—', textAlign: TextAlign.right,
+                                    style: TextStyle(color: value != null ? C.green : C.muted, fontWeight: FontWeight.w700)),
+                              ),
+                            ]),
+                            if (names.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Wrap(spacing: 6, runSpacing: 6, children: names.map((n) => Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                    child: Text(n, style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                  )).toList()),
+                            ],
+                            if (busKm != null || motoKm != null) ...[
+                              const SizedBox(height: 8),
+                              Wrap(spacing: 6, runSpacing: 6, children: [
+                                if (busKm != null)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                    child: Text('Bus stop · ${busKm.toStringAsFixed(2)} km',
+                                        style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                  ),
+                                if (motoKm != null)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
+                                    child: Text('Moto stop · ${motoKm.toStringAsFixed(2)} km',
+                                        style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
+                                  ),
+                              ]),
+                            ],
+                          ]),
+                        );
+                      }),
+                    ];
+                  }),
+                if (contextualRows.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  GestureDetector(
+                    onTap: () => setState(() => showAdditionalDetails = !showAdditionalDetails),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text(showAdditionalDetails ? 'Hide additional details' : 'Show additional details',
+                          style: const TextStyle(color: C.green, fontWeight: FontWeight.w600, fontSize: 12.5)),
+                      const SizedBox(width: 4),
+                      Icon(showAdditionalDetails ? Icons.expand_less : Icons.expand_more, size: 16, color: C.green),
+                    ]),
+                  ),
+                  if (showAdditionalDetails) ...[
+                    const SizedBox(height: 10),
+                    ...contextualRows.map((e) => Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                              color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             Expanded(
-                              child: Text('${c['label']}',
+                              child: Text(e.key,
                                   style: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
                             ),
                             const SizedBox(width: 12),
                             Flexible(
-                              child: Text(value != null ? _fmtAnswer(value) : '—', textAlign: TextAlign.right,
-                                  style: TextStyle(color: value != null ? C.green : C.muted, fontWeight: FontWeight.w700)),
+                              child: Text(_fmtAnswer(e.value), textAlign: TextAlign.right,
+                                  style: const TextStyle(color: C.green, fontWeight: FontWeight.w700)),
                             ),
                           ]),
-                          if (names.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Wrap(spacing: 6, runSpacing: 6, children: names.map((n) => Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
-                                  child: Text(n, style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
-                                )).toList()),
-                          ],
-                          if (busKm != null || motoKm != null) ...[
-                            const SizedBox(height: 8),
-                            Wrap(spacing: 6, runSpacing: 6, children: [
-                              if (busKm != null)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
-                                  child: Text('Bus stop · ${busKm.toStringAsFixed(2)} km',
-                                      style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
-                                ),
-                              if (motoKm != null)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(color: C.sand, borderRadius: BorderRadius.circular(999)),
-                                  child: Text('Moto stop · ${motoKm.toStringAsFixed(2)} km',
-                                      style: const TextStyle(fontSize: 10.5, color: C.greenDark, fontWeight: FontWeight.w600)),
-                                ),
-                            ]),
-                          ],
-                        ]),
+                        )),
+                  ],
+                ],
+                const SizedBox(height: 20),
+                Row(children: [
+                  const Text('Rate this university', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+                  const SizedBox(width: 8),
+                  Text(
+                    ratingCount > 0 ? '${avgRating?.toStringAsFixed(1)} ★ ($ratingCount rating${ratingCount == 1 ? '' : 's'})' : 'No ratings yet',
+                    style: const TextStyle(color: C.muted, fontSize: 11.5),
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                // A university that has never filled in its criteria answers
+                // still shows up in rankings (scored 0 against whatever the
+                // graduate picked) but there's genuinely nothing behind it yet
+                // -- so graduates can't rate it either, to avoid a rating that
+                // isn't backed by any real data.
+                if (vals.isEmpty)
+                  const Text('This university hasn\'t set up its criteria answers yet, so it can\'t be rated.',
+                      style: TextStyle(color: C.muted, fontSize: 11.5, fontStyle: FontStyle.italic))
+                else
+                  Row(
+                    children: List.generate(5, (i) {
+                      return IconButton(
+                        onPressed: () async {
+                          setState(() => myRating = i + 1);
+                          try {
+                            await Api.rate(widget.id, i + 1);
+                          } catch (e) {
+                            if (mounted) toast(context, e.toString());
+                          }
+                        },
+                        icon: Icon(i < myRating ? Icons.star : Icons.star_border, color: C.gold, size: 30),
                       );
                     }),
-                  ];
-                }),
-              if (contextualRows.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                GestureDetector(
-                  onTap: () => setState(() => showAdditionalDetails = !showAdditionalDetails),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Text(showAdditionalDetails ? 'Hide additional details' : 'Show additional details',
-                        style: const TextStyle(color: C.green, fontWeight: FontWeight.w600, fontSize: 12.5)),
-                    const SizedBox(width: 4),
-                    Icon(showAdditionalDetails ? Icons.expand_less : Icons.expand_more, size: 16, color: C.green),
+                  ),
                   ]),
                 ),
-                if (showAdditionalDetails) ...[
-                  const SizedBox(height: 10),
-                  ...contextualRows.map((e) => Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                            color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Expanded(
-                            child: Text(e.key,
-                                style: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 13)),
-                          ),
-                          const SizedBox(width: 12),
-                          Flexible(
-                            child: Text(_fmtAnswer(e.value), textAlign: TextAlign.right,
-                                style: const TextStyle(color: C.green, fontWeight: FontWeight.w700)),
-                          ),
-                        ]),
-                      )),
-                ],
-              ],
-              const SizedBox(height: 20),
-              Row(children: [
-                const Text('Rate this university', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
-                const SizedBox(width: 8),
-                Text(
-                  ratingCount > 0 ? '${avgRating?.toStringAsFixed(1)} ★ ($ratingCount rating${ratingCount == 1 ? '' : 's'})' : 'No ratings yet',
-                  style: const TextStyle(color: C.muted, fontSize: 11.5),
-                ),
-              ]),
-              const SizedBox(height: 8),
-              // A university that has never filled in its criteria answers
-              // still shows up in rankings (scored 0 against whatever the
-              // graduate picked) but there's genuinely nothing behind it yet
-              // -- so graduates can't rate it either, to avoid a rating that
-              // isn't backed by any real data.
-              if (vals.isEmpty)
-                const Text('This university hasn\'t set up its criteria answers yet, so it can\'t be rated.',
-                    style: TextStyle(color: C.muted, fontSize: 11.5, fontStyle: FontStyle.italic))
-              else
-                Row(
-                  children: List.generate(5, (i) {
-                    return IconButton(
-                      onPressed: () async {
-                        setState(() => myRating = i + 1);
-                        try {
-                          await Api.rate(widget.id, i + 1);
-                        } catch (e) {
-                          if (mounted) toast(context, e.toString());
-                        }
-                      },
-                      icon: Icon(i < myRating ? Icons.star : Icons.star_border, color: C.gold, size: 30),
-                    );
-                  }),
-                ),
-              const SizedBox(height: 12),
+                ]),
+              ),
+            ],
+              ),
+            ),
+            formFooter([
               Row(children: [
                 Expanded(
                   child: primaryButton('Apply', () async {
@@ -4911,10 +5025,8 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
               ]),
-                ]),
-              ),
-            ],
-          );
+            ]),
+          ]);
         },
       ),
     );
@@ -7787,18 +7899,30 @@ class _AdminUniversitiesScreenState extends State<AdminUniversitiesScreen> {
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Padding(
         padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(existing == null ? 'Add university' : 'Edit university',
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
-          const SizedBox(height: 16),
-          TextField(controller: abbr, decoration: fieldDeco('Abbreviation (e.g. UoK)')),
-          const SizedBox(height: 12),
-          TextField(controller: name, decoration: fieldDeco('Full name')),
-          const SizedBox(height: 12),
-          TextField(controller: sector, decoration: fieldDeco('Main campus / location')),
-          const SizedBox(height: 20),
-          primaryButton('Save university', () => Navigator.pop(ctx, true)),
-        ]),
+        // Capped + scrollable so the sheet can never grow past the screen
+        // (or past what's left of it once the keyboard is up) and strand the
+        // Save button off the bottom -- same fix as the Add-campus sheet.
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.85),
+          // PINNED: fields scroll, the Save button stays put at the bottom.
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Flexible( // PINNED-SKIP
+              child: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(existing == null ? 'Add university' : 'Edit university',
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
+                  const SizedBox(height: 16),
+                  TextField(controller: abbr, decoration: fieldDeco('Abbreviation (e.g. UoK)')),
+                  const SizedBox(height: 12),
+                  TextField(controller: name, decoration: fieldDeco('Full name')),
+                  const SizedBox(height: 12),
+                  TextField(controller: sector, decoration: fieldDeco('Main campus / location')),
+                ]),
+              ),
+            ),
+                primaryButton('Save university', () => Navigator.pop(ctx, true)),
+          ]),
+        ),
       ),
     );
     if (saved != true) return;
@@ -7942,28 +8066,40 @@ class _AdminCriteriaScreenState extends State<AdminCriteriaScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) => Padding(
           padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(existing == null ? 'Add criterion' : 'Edit criterion',
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
-            const SizedBox(height: 16),
-            TextField(controller: label, decoration: fieldDeco('Criterion name')),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: category,
-              isExpanded: true,
-              decoration: fieldDeco('Category'),
-              items: kCriteriaCategories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (v) => setSheet(() => category = v ?? category),
-            ),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: _dirChip('Higher is better', direction == 'benefit', () => setSheet(() => direction = 'benefit'))),
-              const SizedBox(width: 8),
-              Expanded(child: _dirChip('Lower is better', direction == 'cost', () => setSheet(() => direction = 'cost'))),
+          // Capped + scrollable so the sheet can never grow past the screen
+          // (or past what's left of it once the keyboard is up) and strand the
+          // Save button off the bottom -- same fix as the Add-campus sheet.
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.85),
+            // PINNED: fields scroll, the Save button stays put at the bottom.
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Flexible( // PINNED-SKIP
+                child: SingleChildScrollView(
+                  child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(existing == null ? 'Add criterion' : 'Edit criterion',
+                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
+                    const SizedBox(height: 16),
+                    TextField(controller: label, decoration: fieldDeco('Criterion name')),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: category,
+                      isExpanded: true,
+                      decoration: fieldDeco('Category'),
+                      items: kCriteriaCategories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                      onChanged: (v) => setSheet(() => category = v ?? category),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(children: [
+                      Expanded(child: _dirChip('Higher is better', direction == 'benefit', () => setSheet(() => direction = 'benefit'))),
+                      const SizedBox(width: 8),
+                      Expanded(child: _dirChip('Lower is better', direction == 'cost', () => setSheet(() => direction = 'cost'))),
+                    ]),
+                  ]),
+                ),
+              ),
+                  primaryButton('Save criterion', () => Navigator.pop(ctx, true)),
             ]),
-            const SizedBox(height: 20),
-            primaryButton('Save criterion', () => Navigator.pop(ctx, true)),
-          ]),
+          ),
         ),
       ),
     );
@@ -8122,42 +8258,54 @@ class _AdminCombosScreenState extends State<AdminCombosScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) => Padding(
           padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(existing == null ? 'Add combination' : 'Edit combination',
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
-            const SizedBox(height: 16),
-            TextField(
-              controller: code,
-              enabled: existing == null, // code is fixed once created — delete + re-add to rename
-              textCapitalization: TextCapitalization.characters,
-              decoration: fieldDeco('Code (e.g. PCB)'),
-            ),
-            const SizedBox(height: 16),
-            const Text('SUBJECTS', style: TextStyle(
-                color: C.muted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
-            const SizedBox(height: 8),
-            Wrap(spacing: 6, runSpacing: 6, children: [
-              ...subjects.map((s) => Chip(
-                    label: Text(s, style: const TextStyle(fontSize: 12)),
-                    backgroundColor: const Color(0xFFDCEBE3),
-                    onDeleted: () => setSheet(() => subjects.remove(s)),
-                  )),
-              ActionChip(
-                avatar: const Icon(Icons.add, size: 16, color: C.green),
-                label: const Text('Add subject', style: TextStyle(fontSize: 12, color: C.green)),
-                backgroundColor: Colors.white,
-                side: const BorderSide(color: C.border),
-                onPressed: () async {
-                  final v = await _promptText('Subject name');
-                  if (v != null && v.trim().isNotEmpty && !subjects.contains(v.trim())) {
-                    setSheet(() => subjects.add(v.trim()));
-                  }
-                },
+          // Capped + scrollable so the sheet can never grow past the screen
+          // (or past what's left of it once the keyboard is up) and strand the
+          // Save button off the bottom -- same fix as the Add-campus sheet.
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.85),
+            // PINNED: fields scroll, the Save button stays put at the bottom.
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Flexible( // PINNED-SKIP
+                child: SingleChildScrollView(
+                  child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(existing == null ? 'Add combination' : 'Edit combination',
+                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: C.ink)),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: code,
+                      enabled: existing == null, // code is fixed once created — delete + re-add to rename
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: fieldDeco('Code (e.g. PCB)'),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('SUBJECTS', style: TextStyle(
+                        color: C.muted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+                    const SizedBox(height: 8),
+                    Wrap(spacing: 6, runSpacing: 6, children: [
+                      ...subjects.map((s) => Chip(
+                            label: Text(s, style: const TextStyle(fontSize: 12)),
+                            backgroundColor: const Color(0xFFDCEBE3),
+                            onDeleted: () => setSheet(() => subjects.remove(s)),
+                          )),
+                      ActionChip(
+                        avatar: const Icon(Icons.add, size: 16, color: C.green),
+                        label: const Text('Add subject', style: TextStyle(fontSize: 12, color: C.green)),
+                        backgroundColor: Colors.white,
+                        side: const BorderSide(color: C.border),
+                        onPressed: () async {
+                          final v = await _promptText('Subject name');
+                          if (v != null && v.trim().isNotEmpty && !subjects.contains(v.trim())) {
+                            setSheet(() => subjects.add(v.trim()));
+                          }
+                        },
+                      ),
+                    ]),
+                  ]),
+                ),
               ),
+                  primaryButton('Save combination', () => Navigator.pop(ctx, true)),
             ]),
-            const SizedBox(height: 20),
-            primaryButton('Save combination', () => Navigator.pop(ctx, true)),
-          ]),
+          ),
         ),
       ),
     );
@@ -8291,18 +8439,22 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
         final text = ctl.text.trim();
         return AlertDialog(
           title: Text('Suspend $name'),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('This graduate will still be able to log in, but their home screen will be locked '
-                'and this comment shown to them.', style: TextStyle(color: C.muted, fontSize: 12.5, height: 1.4)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctl,
-              autofocus: true,
-              maxLines: 3,
-              decoration: fieldDeco('Reason for suspension…'),
-              onChanged: (_) => setDialogState(() {}),
-            ),
-          ]),
+          // AlertDialog doesn't scroll its content -- with the keyboard up the
+          // reason field and the buttons would otherwise be unreachable.
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('This graduate will still be able to log in, but their home screen will be locked '
+                  'and this comment shown to them.', style: TextStyle(color: C.muted, fontSize: 12.5, height: 1.4)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctl,
+                autofocus: true,
+                maxLines: 3,
+                decoration: fieldDeco('Reason for suspension…'),
+                onChanged: (_) => setDialogState(() {}),
+              ),
+            ]),
+          ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
             TextButton(
