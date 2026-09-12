@@ -4272,10 +4272,11 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                   ]),
                                 ]),
                               ),
-                              if (fee != null || scholarship != null || accommodation != null)
+                              if (fee != null || scholarship != null || accommodation != null || hasExactProgramme)
                                 Padding(
                                   padding: const EdgeInsets.fromLTRB(13, 0, 13, 8),
                                   child: Wrap(spacing: 6, runSpacing: 6, children: [
+                                    if (hasExactProgramme) _chip('Your programme', Icons.check_circle_outline),
                                     if (fee != null) _chip(_fmtRwf(fee as num), Icons.payments_outlined),
                                     if (scholarship != null) _chip('Scholarship ${scholarship is num ? scholarship.toStringAsFixed(1) : scholarship}/5', Icons.school_outlined),
                                     if (accommodation != null) _chip(accommodation == true ? 'On-campus' : 'Off-campus', Icons.home_outlined),

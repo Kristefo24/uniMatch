@@ -14,7 +14,10 @@ CREATE TABLE IF NOT EXISTS users (
   track          VARCHAR(20),
   photo          TEXT,
   reset_otp          VARCHAR(6),
-  reset_otp_expires  VARCHAR(40)
+  reset_otp_expires  VARCHAR(40),
+  -- Wrong guesses against the current reset_otp. Burned (code cleared) once it
+  -- hits MAX_OTP_ATTEMPTS in index.js; zeroed whenever a fresh code is issued.
+  reset_otp_attempts INT NOT NULL DEFAULT 0
 );
 -- Re-run on every boot so an already-live database picks up the columns too.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS track VARCHAR(20);
@@ -25,6 +28,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS home_area VARCHAR(160);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS home_lat DOUBLE PRECISION;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS home_lng DOUBLE PRECISION;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS suspend_reason TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_attempts INT NOT NULL DEFAULT 0;
 
 -- A student signup that hasn't verified its email OTP yet -- the real
 -- `users` row is only created once verify-signup succeeds, so an
@@ -38,8 +42,13 @@ CREATE TABLE IF NOT EXISTS pending_signups (
   university_id  VARCHAR(64),
   otp            VARCHAR(6) NOT NULL,
   otp_expires    VARCHAR(40) NOT NULL,
+  -- Wrong guesses against `otp` -- same burn-after-MAX_OTP_ATTEMPTS rule as
+  -- users.reset_otp_attempts. Reset to 0 by every createPendingSignup upsert.
+  otp_attempts   INT NOT NULL DEFAULT 0,
   created_at     TIMESTAMP
 );
+-- Re-run on every boot so an already-live database picks the column up too.
+ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS otp_attempts INT NOT NULL DEFAULT 0;
 
 -- Evaluation criteria the admin manages. direction: 'cost' | 'benefit'.
 CREATE TABLE IF NOT EXISTS criteria (

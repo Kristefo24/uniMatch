@@ -679,7 +679,9 @@ module.exports = {
     db.pendingSignups = db.pendingSignups || {};
     db.pendingSignups[email.toLowerCase()] = {
       name, email, password, track: track || null, universityId: universityId || null,
-      otp, otpExpires, createdAt: new Date().toISOString(),
+      // attempts starts at 0 for every fresh code -- this record is rebuilt
+      // wholesale on resend, so a resend always clears an earlier lockout.
+      otp, otpExpires, attempts: 0, createdAt: new Date().toISOString(),
     };
     save();
     return { ok: true };
@@ -692,6 +694,22 @@ module.exports = {
     db.pendingSignups = db.pendingSignups || {};
     delete db.pendingSignups[(email || '').toLowerCase()];
     save();
+    return { ok: true };
+  },
+  async bumpPendingSignupAttempts(email) {
+    db.pendingSignups = db.pendingSignups || {};
+    const p = db.pendingSignups[(email || '').toLowerCase()];
+    if (!p) return 0;
+    p.attempts = (p.attempts || 0) + 1;
+    save();
+    return p.attempts;
+  },
+  // Burns the code without discarding the record -- the graduate's name/password
+  // survive so "Resend code" still works instead of stranding them at re-signup.
+  async clearPendingSignupOtp(email) {
+    db.pendingSignups = db.pendingSignups || {};
+    const p = db.pendingSignups[(email || '').toLowerCase()];
+    if (p) { p.otp = null; save(); }
     return { ok: true };
   },
 
@@ -708,14 +726,29 @@ module.exports = {
     if (!u) throw new Error('User not found');
     u.resetOtp = otp;
     u.resetOtpExpires = expiresAt;
+    u.resetOtpAttempts = 0; // a new code always starts from a clean slate
     save();
     return { ok: true };
   },
-  async resetPassword(email, otp, password) {
+  async getResetOtp(email) {
     const u = db.users.find(x => x.email.toLowerCase() === (email || '').toLowerCase());
-    if (!u || !u.resetOtp || u.resetOtp !== otp) throw new Error('Invalid or expired code');
-    if (!u.resetOtpExpires || new Date(u.resetOtpExpires).getTime() < Date.now()) throw new Error('Invalid or expired code');
-    u.password = password;
+    if (!u) return null;
+    return { userId: u.id, otp: u.resetOtp || null, expiresAt: u.resetOtpExpires || null, attempts: u.resetOtpAttempts || 0 };
+  },
+  async bumpResetOtpAttempts(userId) {
+    const u = db.users.find(x => x.id === userId);
+    if (!u) return 0;
+    u.resetOtpAttempts = (u.resetOtpAttempts || 0) + 1;
+    save();
+    return u.resetOtpAttempts;
+  },
+  // Deliberately leaves resetOtpAttempts alone: this is called both on success
+  // and when a code is burned for too many wrong guesses, and zeroing it in the
+  // burn case would hand the guesser a fresh set of attempts. Every new code
+  // goes through setResetOtp, which zeroes the counter anyway.
+  async clearResetOtp(userId) {
+    const u = db.users.find(x => x.id === userId);
+    if (!u) return { ok: true };
     u.resetOtp = null;
     u.resetOtpExpires = null;
     save();

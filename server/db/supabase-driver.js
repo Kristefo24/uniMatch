@@ -234,9 +234,9 @@ module.exports = {
   // overwrites the previous attempt with fresh data and a fresh code.
   async createPendingSignup({ name, email, password, track, universityId, otp, otpExpires }) {
     await q(
-      'INSERT INTO pending_signups (email,name,password,track,university_id,otp,otp_expires,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ' +
+      'INSERT INTO pending_signups (email,name,password,track,university_id,otp,otp_expires,otp_attempts,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,0,NOW()) ' +
       'ON CONFLICT (email) DO UPDATE SET name=EXCLUDED.name, password=EXCLUDED.password, track=EXCLUDED.track, ' +
-      'university_id=EXCLUDED.university_id, otp=EXCLUDED.otp, otp_expires=EXCLUDED.otp_expires, created_at=NOW()',
+      'university_id=EXCLUDED.university_id, otp=EXCLUDED.otp, otp_expires=EXCLUDED.otp_expires, otp_attempts=0, created_at=NOW()',
       [email.toLowerCase(), name, password, track || null, universityId || null, otp, otpExpires]);
     return { ok: true };
   },
@@ -244,10 +244,23 @@ module.exports = {
     const { rows } = await q('SELECT * FROM pending_signups WHERE email=$1', [(email || '').toLowerCase()]);
     if (!rows.length) return null;
     const r = rows[0];
-    return { name: r.name, email: r.email, password: r.password, track: r.track, universityId: r.university_id, otp: r.otp, otpExpires: r.otp_expires };
+    return { name: r.name, email: r.email, password: r.password, track: r.track, universityId: r.university_id, otp: r.otp, otpExpires: r.otp_expires, attempts: r.otp_attempts || 0 };
   },
   async deletePendingSignup(email) {
     await q('DELETE FROM pending_signups WHERE email=$1', [(email || '').toLowerCase()]);
+    return { ok: true };
+  },
+  async bumpPendingSignupAttempts(email) {
+    const { rows } = await q(
+      'UPDATE pending_signups SET otp_attempts = otp_attempts + 1 WHERE email=$1 RETURNING otp_attempts',
+      [(email || '').toLowerCase()]);
+    return rows.length ? (rows[0].otp_attempts || 0) : 0;
+  },
+  // Burns the code but keeps the record so "Resend code" still works. `otp` is
+  // NOT NULL in schema.sql, so it's blanked rather than nulled -- '' can never
+  // match a submitted code (index.js rejects an empty one before it gets here).
+  async clearPendingSignupOtp(email) {
+    await q("UPDATE pending_signups SET otp='' WHERE email=$1", [(email || '').toLowerCase()]);
     return { ok: true };
   },
 
@@ -257,15 +270,24 @@ module.exports = {
   },
 
   async setResetOtp(userId, otp, expiresAt) {
-    await q('UPDATE users SET reset_otp=$1, reset_otp_expires=$2 WHERE id=$3', [otp, expiresAt, userId]);
+    await q('UPDATE users SET reset_otp=$1, reset_otp_expires=$2, reset_otp_attempts=0 WHERE id=$3', [otp, expiresAt, userId]);
     return { ok: true };
   },
-  async resetPassword(email, otp, password) {
-    const { rows } = await q('SELECT id,reset_otp,reset_otp_expires FROM users WHERE lower(email)=lower($1)', [email]);
+  async getResetOtp(email) {
+    const { rows } = await q('SELECT id,reset_otp,reset_otp_expires,reset_otp_attempts FROM users WHERE lower(email)=lower($1)', [email]);
     const u = rows[0];
-    if (!u || !u.reset_otp || u.reset_otp !== otp) throw new Error('Invalid or expired code');
-    if (!u.reset_otp_expires || new Date(u.reset_otp_expires).getTime() < Date.now()) throw new Error('Invalid or expired code');
-    await q('UPDATE users SET password=$1, reset_otp=NULL, reset_otp_expires=NULL WHERE id=$2', [password, u.id]);
+    if (!u) return null;
+    return { userId: u.id, otp: u.reset_otp || null, expiresAt: u.reset_otp_expires || null, attempts: u.reset_otp_attempts || 0 };
+  },
+  async bumpResetOtpAttempts(userId) {
+    const { rows } = await q(
+      'UPDATE users SET reset_otp_attempts = reset_otp_attempts + 1 WHERE id=$1 RETURNING reset_otp_attempts',
+      [userId]);
+    return rows.length ? (rows[0].reset_otp_attempts || 0) : 0;
+  },
+  // Leaves reset_otp_attempts alone on purpose -- see json-driver.js.
+  async clearResetOtp(userId) {
+    await q('UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=$1', [userId]);
     return { ok: true };
   },
 

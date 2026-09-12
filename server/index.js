@@ -13,6 +13,32 @@ const ExcelJS = require('exceljs');
 // code that expires 2 minutes after it's (re)sent.
 const OTP_TTL_MS = 2 * 60 * 1000;
 const genOtp = () => String(Math.floor(100000 + Math.random() * 900000));
+// Wrong guesses a single code tolerates before it's burned. Without this, a
+// 6-digit code is brute-forceable inside its own 2-minute window -- unlimited
+// guesses against ~10^6 combinations is not a real barrier, and on
+// /reset-password a hit means taking over the account.
+const MAX_OTP_ATTEMPTS = 5;
+const TOO_MANY_ATTEMPTS = 'Too many incorrect attempts — request a new code.';
+
+// The single gate both OTP flows go through (signup verification and password
+// reset). Returns normally only when `supplied` is the stored, unexpired code.
+// Otherwise it counts the miss and throws -- and once the limit is reached it
+// burns the code via `burn()`, so even the *correct* code stops working until
+// a new one is sent. `bump` returns the new attempt count; `burn` invalidates
+// the stored code without destroying the surrounding record.
+async function checkOtp({ stored, expiresAt, attempts, supplied, bump, burn }) {
+  // Re-checked on every call, not just after a bump: the counter is what makes
+  // the lockout survive a restart and outlast the burn itself.
+  if ((attempts || 0) >= MAX_OTP_ATTEMPTS) throw new Error(TOO_MANY_ATTEMPTS);
+  const live = !!expiresAt && new Date(expiresAt).getTime() >= Date.now();
+  if (stored && supplied === stored && live) return;
+  const now = await bump();
+  if (now >= MAX_OTP_ATTEMPTS) {
+    await burn();
+    throw new Error(TOO_MANY_ATTEMPTS);
+  }
+  throw new Error('Invalid or expired code');
+}
 
 const PORT = Number(process.env.PORT || 4000);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
@@ -74,9 +100,52 @@ app.post('/signup', wrap(async (req, res) => {
     if (universityId) await db.setUniversityContacts(universityId, { contactEmail, contactPhone });
     return res.json({ pending: true, user: { name, email, role: 'staff' } });
   }
-  // Student: create account immediately — no email verification step.
+  // Student: the real account isn't created yet — a code is emailed and
+  // must be verified via /verify-signup first. A second signup attempt with
+  // the same (still-unverified) email just overwrites the pending one with
+  // a fresh code, so a mistyped field or a lost email doesn't strand them.
   if (await db.findUserByEmail(email)) throw new Error('An account with this email already exists');
-  await db.createUser({ name, email, password: hashed, role: 'student', universityId, track });
+  const otp = genOtp();
+  const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
+  await db.createPendingSignup({ name, email, password: hashed, track, universityId, otp, otpExpires });
+  // Not awaited on purpose -- the pending signup already exists (Resend
+  // code works regardless), so the response shouldn't wait on a possibly
+  // slow/unreachable SMTP connection.
+  mailer.sendMail({ to: email, subject: 'Your UniMatch verification code',
+    text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
+    html: mailer.otpEmailHtml({ intro: 'Use the code below to verify your UniMatch account:', otp }) })
+    .catch(e => console.error('[mailer] signup OTP send failed:', e.message));
+  res.json({ needsVerification: true, email });
+}));
+
+app.post('/verify-signup', wrap(async (req, res) => {
+  const { email, otp } = req.body || {};
+  if (!email || !otp) throw new Error('Email and code are required');
+  const pending = await db.getPendingSignup(email);
+  // Same message as a wrong code, so this can't be used to probe which
+  // addresses have a signup in flight.
+  if (!pending) throw new Error('Invalid or expired code');
+  await checkOtp({
+    stored: pending.otp, expiresAt: pending.otpExpires, attempts: pending.attempts, supplied: otp,
+    bump: () => db.bumpPendingSignupAttempts(email),
+    burn: () => db.clearPendingSignupOtp(email),
+  });
+  await db.createUser({ name: pending.name, email: pending.email, password: pending.password, role: 'student', universityId: pending.universityId, track: pending.track });
+  await db.deletePendingSignup(email);
+  res.json({ ok: true });
+}));
+
+app.post('/resend-signup-otp', wrap(async (req, res) => {
+  const { email } = req.body || {};
+  const pending = await db.getPendingSignup(email || '');
+  if (!pending) throw new Error('No pending signup found for that email — please sign up again');
+  const otp = genOtp();
+  const otpExpires = new Date(Date.now() + OTP_TTL_MS).toISOString();
+  await db.createPendingSignup({ ...pending, otp, otpExpires });
+  mailer.sendMail({ to: pending.email, subject: 'Your UniMatch verification code',
+    text: `Your UniMatch verification code is ${otp}. It expires in 2 minutes.`,
+    html: mailer.otpEmailHtml({ intro: 'Here is your new UniMatch verification code:', otp }) })
+    .catch(e => console.error('[mailer] resend OTP send failed:', e.message));
   res.json({ ok: true });
 }));
 
@@ -251,13 +320,12 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
   if (deptEligibleIds) {
     const deptMatches = ranked.filter(u => deptEligibleIds.has(u.id));
     let filtered;
-    // Within deptMatches only: the university offering the graduate's exact
-    // chosen programme always jumps to #1 -- the score gap no longer decides
-    // *whether* it's promoted. The same gap is still computed (`showProgrammeReason`)
-    // so the UI can tell whether the promotion was genuinely competitive
-    // (cc within 0.15 of the best alternative) or a big jump, and choose its
-    // Strongest/Weak messaging accordingly -- it just no longer gates the
-    // ranking itself.
+    // Exact-programme promotion: only boost to #1 when the score gap is small
+    // (≤0.15 cc). A large gap means the exact-programme university genuinely
+    // scores much lower on the criteria the graduate chose — forcing it to #1
+    // would hide a better-matching option. Instead, keep the cc-sorted order
+    // and let the UI surface "Your programme" on whichever card has it, so
+    // the graduate can make an informed choice.
     if (exactProgrammeIds) {
       const exactInDept = deptMatches.filter(u => exactProgrammeIds.has(u.id));
       const others2 = deptMatches.filter(u => !exactProgrammeIds.has(u.id));
@@ -265,8 +333,15 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
         const bestExact = exactInDept[0]; // deptMatches is still cc-desc at this point
         const bestOther = others2[0];
         const showProgrammeReason = bestExact.cc >= bestOther.cc - 0.15;
-        filtered = [bestExact, ...deptMatches.filter(u => u.id !== bestExact.id)]
-          .map(u => ({ ...u, hasExactProgramme: exactProgrammeIds.has(u.id), showProgrammeReason }));
+        if (showProgrammeReason) {
+          // Small gap — promote the exact-programme university to #1
+          filtered = [bestExact, ...deptMatches.filter(u => u.id !== bestExact.id)]
+            .map(u => ({ ...u, hasExactProgramme: exactProgrammeIds.has(u.id), showProgrammeReason: true }));
+        } else {
+          // Large gap — keep cc-sorted order; mark which university has the programme
+          filtered = deptMatches
+            .map(u => ({ ...u, hasExactProgramme: exactProgrammeIds.has(u.id), showProgrammeReason: false }));
+        }
       } else {
         filtered = deptMatches.map(u => ({ ...u, hasExactProgramme: exactProgrammeIds.has(u.id) }));
       }
@@ -577,9 +652,11 @@ app.delete('/admin/students/:id', auth(), requireRole('admin'), wrap(async (req,
 app.get('/health', (_req, res) => res.json({ ok: true, driver: (process.env.DB_DRIVER || 'json') }));
 
 // ---- forgot password ------------------------------------------------------
-// Student/admin: password is reset directly (no OTP step).
-// Staff: account goes back to pending — an admin must re-confirm before
-// they can log in again. Staff can never reset their own password.
+// Student/admin: a real, randomly generated OTP (2-minute expiry, matching
+// signup) is stored server-side, emailed, and must be verified by
+// /reset-password before the password actually changes.
+// Staff: the reset must be re-confirmed by an admin, so their account goes
+// back to pending and they can't log in until confirmed again.
 app.post('/forgot-password', wrap(async (req, res) => {
   const { email } = req.body || {};
   const user = await db.findUserByEmail(email || '');
@@ -590,20 +667,32 @@ app.post('/forgot-password', wrap(async (req, res) => {
     if (r) await db.setStaffRequestStatus(r.id, 'pending');
     return res.json({ staff: true });
   }
+  const otp = genOtp();
+  const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
+  await db.setResetOtp(user.id, otp, expiresAt);
+  mailer.sendMail({ to: user.email, subject: 'Your UniMatch password reset code',
+    text: `Your UniMatch password reset code is ${otp}. It expires in 2 minutes.`,
+    html: mailer.otpEmailHtml({ intro: 'Use the code below to reset your UniMatch password:', otp }) })
+    .catch(e => console.error('[mailer] reset OTP send failed:', e.message));
   res.json({ staff: false });
 }));
 
 app.post('/reset-password', wrap(async (req, res) => {
-  const { email, password } = req.body || {};
-  if (!email || !password) throw new Error('Email and new password are required');
+  const { email, otp, password } = req.body || {};
+  if (!email || !otp || !password) throw new Error('Email, code and new password are required');
   if (password.length < 8) throw new Error('Password must be at least 8 characters');
-  const user = await db.findUserByEmail(email);
-  if (!user) throw new Error('No account found with that email');
-  // Staff accounts can never self-reset — their reset goes through admin
-  // re-confirmation via /forgot-password which sets them back to pending.
-  if (user.role === 'staff') throw new Error('Staff accounts cannot be self-reset — contact your admin');
+  const rec = await db.getResetOtp(email);
+  // Staff never get a reset code issued (see /forgot-password above), so they
+  // can't self-reset -- their `otp` is always null and checkOtp rejects it.
+  if (!rec) throw new Error('Invalid or expired code');
+  await checkOtp({
+    stored: rec.otp, expiresAt: rec.expiresAt, attempts: rec.attempts, supplied: otp,
+    bump: () => db.bumpResetOtpAttempts(rec.userId),
+    burn: () => db.clearResetOtp(rec.userId),
+  });
   const hashed = await bcrypt.hash(password, 10);
-  await db.changePassword(user.id, hashed);
+  await db.changePassword(rec.userId, hashed);
+  await db.clearResetOtp(rec.userId);
   res.json({ ok: true });
 }));
 
