@@ -192,6 +192,18 @@ module.exports = {
     return db.users.find(u => u.email.toLowerCase() === email.toLowerCase()) || null;
   },
 
+  async criteriaValueStats() {
+    const out = {};
+    for (const u of db.universities) {
+      for (const [code, v] of Object.entries(u.vals || {})) {
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+        const cur = out[code] || (out[code] = { hasData: true, max: v });
+        if (v > cur.max) cur.max = v;
+      }
+    }
+    return out;
+  },
+
   async listUniversities() { return db.universities.map(u => ({ ...u, ...ratingSummary(u.id), ...staffExtras(u.id) })); },
   async getUniversity(id) {
     const u = db.universities.find(x => x.id === id);

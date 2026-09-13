@@ -12,3 +12,4 @@ app/android/.gradle/
 app/android/app/build/
 apkbuild.log
 webbuild.log
+server/backups/

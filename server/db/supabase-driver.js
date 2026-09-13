@@ -165,6 +165,28 @@ async function dedupeApplications() {
   `);
 }
 
+// Pure assembly step, shared by the single-row and batched paths so the two
+// can never drift apart in what they return.
+function buildUniversity(u, camps, valsMap, rating, sd) {
+  sd = sd || { combos: {}, criteria: {} };
+  const c = sd.criteria || {};
+  return {
+    id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, campuses: camps, vals: valsMap,
+    avgRating: rating && rating.avg != null ? Number(Number(rating.avg).toFixed(2)) : null,
+    ratingCount: (rating && rating.n) || 0,
+    combos: sd.combos || {},
+    religiousBased: !!c.religiousBased,
+    religion: c.religion || null,
+    schoolLocation: c.schoolLocation || null,
+    busStops: Array.isArray(c.busStops) ? c.busStops : [],
+    motoStops: Array.isArray(c.motoStops) ? c.motoStops : [],
+    campusPins: (c.campusPins && typeof c.campusPins === 'object') ? c.campusPins : {},
+    website: c.website || null,
+    contactEmail: c.contactEmail || null,
+    contactPhone: c.contactPhone || null,
+  };
+}
+
 async function hydrateUniversity(u) {
   const { rows: camps } = await q('SELECT id,name FROM campuses WHERE university_id=$1', [u.id]);
   for (const c of camps) {
@@ -176,23 +198,39 @@ async function hydrateUniversity(u) {
   vals.forEach(v => { map[v.code] = Number(v.value); });
   const { rows: rt } = await q('SELECT AVG(stars)::float AS avg, COUNT(*)::int AS n FROM ratings WHERE university_id=$1', [u.id]);
   const { rows: sdRows } = await q('SELECT data FROM staff_data WHERE university_id=$1', [u.id]);
-  let sd = { combos: {}, criteria: {} };
+  let sd = null;
   if (sdRows.length) { try { sd = JSON.parse(sdRows[0].data); } catch { /* fallthrough */ } }
-  return {
-    id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, campuses: camps, vals: map,
-    avgRating: rt[0].avg != null ? Number(rt[0].avg.toFixed(2)) : null,
-    ratingCount: rt[0].n || 0,
-    combos: sd.combos || {},
-    religiousBased: !!(sd.criteria && sd.criteria.religiousBased),
-    religion: (sd.criteria && sd.criteria.religion) || null,
-    schoolLocation: (sd.criteria && sd.criteria.schoolLocation) || null,
-    busStops: (sd.criteria && Array.isArray(sd.criteria.busStops)) ? sd.criteria.busStops : [],
-    motoStops: (sd.criteria && Array.isArray(sd.criteria.motoStops)) ? sd.criteria.motoStops : [],
-    campusPins: (sd.criteria && sd.criteria.campusPins && typeof sd.criteria.campusPins === 'object') ? sd.criteria.campusPins : {},
-    website: (sd.criteria && sd.criteria.website) || null,
-    contactEmail: (sd.criteria && sd.criteria.contactEmail) || null,
-    contactPhone: (sd.criteria && sd.criteria.contactPhone) || null,
-  };
+  return buildUniversity(u, camps, map, rt[0], sd);
+}
+
+// Batched equivalent of hydrateUniversity across every university: six queries
+// in total rather than one per university plus one per campus. The per-row
+// version issued ~40 round trips for seven universities, which dominated the
+// response time of every endpoint that lists universities.
+async function hydrateAll(unis) {
+  if (!unis.length) return [];
+  const ids = unis.map(u => u.id);
+  const [camps, depts, vals, rates, sdata] = await Promise.all([
+    q('SELECT id,name,university_id FROM campuses WHERE university_id = ANY($1)', [ids]),
+    q('SELECT cd.campus_id, cd.department FROM campus_departments cd JOIN campuses c ON c.id = cd.campus_id WHERE c.university_id = ANY($1)', [ids]),
+    q('SELECT university_id, code, value FROM criteria_values WHERE university_id = ANY($1)', [ids]),
+    q('SELECT university_id, AVG(stars)::float AS avg, COUNT(*)::int AS n FROM ratings WHERE university_id = ANY($1) GROUP BY university_id', [ids]),
+    q('SELECT university_id, data FROM staff_data WHERE university_id = ANY($1)', [ids]),
+  ]);
+  const deptsByCampus = {};
+  for (const d of depts.rows) (deptsByCampus[d.campus_id] ||= []).push(d.department);
+  const campsByUni = {};
+  for (const c of camps.rows) {
+    (campsByUni[c.university_id] ||= []).push({ id: c.id, name: c.name, depts: deptsByCampus[c.id] || [] });
+  }
+  const valsByUni = {};
+  for (const v of vals.rows) (valsByUni[v.university_id] ||= {})[v.code] = Number(v.value);
+  const rateByUni = {};
+  for (const r of rates.rows) rateByUni[r.university_id] = r;
+  const sdByUni = {};
+  for (const r of sdata.rows) { try { sdByUni[r.university_id] = JSON.parse(r.data); } catch { /* skip */ } }
+  return unis.map(u => buildUniversity(
+    u, campsByUni[u.id] || [], valsByUni[u.id] || {}, rateByUni[u.id], sdByUni[u.id]));
 }
 
 // The three public contact fields live inside the criteria blob, but they're
@@ -314,9 +352,20 @@ module.exports = {
     return u || null;
   },
 
+  // One grouped query answering what /criteria needs -- whether any university
+  // has a value for a code, and the highest one. Previously that endpoint
+  // hydrated every university in full (photos included) just to read two facts.
+  async criteriaValueStats() {
+    const { rows } = await q(
+      'SELECT code, COUNT(*)::int AS n, MAX(value) AS max FROM criteria_values GROUP BY code');
+    const out = {};
+    for (const r of rows) out[r.code] = { hasData: r.n > 0, max: r.max == null ? null : Number(r.max) };
+    return out;
+  },
+
   async listUniversities() {
     const { rows } = await q('SELECT * FROM universities');
-    return Promise.all(rows.map(hydrateUniversity));
+    return hydrateAll(rows);
   },
   async getUniversity(id) {
     const { rows } = await q('SELECT * FROM universities WHERE id=$1', [id]);

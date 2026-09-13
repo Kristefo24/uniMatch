@@ -202,18 +202,20 @@ app.get('/universities/:id/answers', wrap(async (req, res) => {
 // code so students/staff only see criteria at least one university has
 // real values for.
 app.get('/criteria', wrap(async (_req, res) => {
-  const [criteria, unis] = await Promise.all([db.listCriteria(), db.listUniversities()]);
+  // criteriaValueStats() answers both questions in a single grouped query.
+  // This used to hydrate every university in full -- campuses, ratings, staff
+  // blobs and base64 logos -- purely to read two facts per criterion, which
+  // made the endpoint the slowest in the app.
+  const [criteria, stats] = await Promise.all([db.listCriteria(), db.criteriaValueStats()]);
   res.json(criteria.map(c => {
-    // Highest value any university actually has for this criterion -- lets the
-    // client size an input to real data (the budget slider's ceiling) instead
-    // of a hardcoded guess. null when no university has a number for it.
-    const nums = unis
-      .map(u => u.vals && u.vals[c.code])
-      .filter(v => typeof v === 'number' && Number.isFinite(v));
+    const s = stats[c.code];
     return {
       ...c,
-      hasData: unis.some(u => u.vals && Object.prototype.hasOwnProperty.call(u.vals, c.code)),
-      maxValue: nums.length ? Math.max(...nums) : null,
+      hasData: !!(s && s.hasData),
+      // Highest value any university actually has for this criterion -- lets
+      // the client size an input to real data (the budget slider's ceiling)
+      // instead of a hardcoded guess. null when nobody has a number for it.
+      maxValue: s && Number.isFinite(s.max) ? s.max : null,
     };
   }));
 }));

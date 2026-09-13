@@ -339,6 +339,14 @@ module.exports = {
     return u || null;
   },
 
+  async criteriaValueStats() {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT code, COUNT(*) AS n, MAX(value) AS max FROM criteria_values GROUP BY code');
+    const out = {};
+    for (const r of rows) out[r.code] = { hasData: r.n > 0, max: r.max == null ? null : Number(r.max) };
+    return out;
+  },
+
   async listUniversities() {
     const p = await getPool();
     const [rows] = await p.query('SELECT * FROM universities');
