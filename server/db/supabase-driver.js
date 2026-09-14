@@ -365,6 +365,12 @@ module.exports = {
     return out;
   },
 
+  // Single-column read -- see json-driver for why this exists.
+  async getUniversityPhoto(id) {
+    const { rows } = await q('SELECT photo FROM universities WHERE id=$1', [id]);
+    return rows.length ? (rows[0].photo || null) : null;
+  },
+
   async listUniversities() {
     const { rows } = await q('SELECT * FROM universities');
     return hydrateAll(rows);

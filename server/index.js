@@ -8,6 +8,7 @@ const db = require('./db');
 const { topsis, haversineKm } = require('./topsis');
 const mailer = require('./mailer');
 const ExcelJS = require('exceljs');
+const crypto = require('crypto');
 
 // Shared by signup verification and password reset -- both are a 6-digit
 // code that expires 2 minutes after it's (re)sent.
@@ -198,6 +199,29 @@ app.get('/universities/:id/answers', wrap(async (req, res) => {
   res.json(await db.getStaffData(req.params.id));
 }));
 
+// A university's logo as a real image response rather than a base64 data URI
+// inside JSON. Embedded, the seven logos were ~260 KB of every /rank response
+// -- ~93% of it -- and a data URI can't be cached, so they were re-sent on
+// every ranking. Served here they are fetched once and revalidated cheaply.
+app.get('/universities/:id/photo', wrap(async (req, res) => {
+  const photo = await db.getUniversityPhoto(req.params.id);
+  if (!photo) return res.status(404).json({ error: 'No photo' });
+  // Stored as a data URI ("data:image/jpeg;base64,...."); split off the bytes.
+  const m = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(photo);
+  const type = (m && m[1]) || 'image/jpeg';
+  const body = m ? (m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3])))
+                 : Buffer.from(photo, 'base64');
+  // Content-addressed ETag: a staff photo change alters the bytes, so the tag
+  // changes with it and clients pick the new logo up on their next revalidate.
+  const etag = '"' + crypto.createHash('sha1').update(body).digest('hex') + '"';
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  res.setHeader('Content-Type', type);
+  res.setHeader('Content-Length', body.length);
+  res.send(body);
+}));
+
 // The admin-managed evaluation criteria catalogue, with a hasData flag per
 // code so students/staff only see criteria at least one university has
 // real values for.
@@ -324,7 +348,12 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
   }
   let ranked = topsis(unis, criteria || [])
     .map(u => ({
-      id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, cc: Number(u.cc.toFixed(4)),
+      id: u.id, abbr: u.abbr, name: u.name, cc: Number(u.cc.toFixed(4)),
+      // The logo is fetched from /universities/:id/photo instead of being
+      // embedded -- see that endpoint. `hasPhoto` tells the client whether to
+      // request one at all, so a university without a logo falls back to its
+      // initials badge rather than showing an empty tile after a 404.
+      hasPhoto: !!u.photo,
       bestCode: u.bestCode || null, weakCodes: u.weakCodes || [],
       vals: u.vals || {}, combos: u.combos || {},
       // Embedded so the results screen doesn't have to fetch

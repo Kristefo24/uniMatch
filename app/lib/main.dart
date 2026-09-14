@@ -592,6 +592,25 @@ class Session {
 /// decode happen once per distinct image.
 final Map<String, ImageProvider> _photoCache = {};
 
+/// A university's logo, preferring the cacheable image endpoint.
+///
+/// The server used to embed logos as base64 in every /rank response — about
+/// 260 KB of a 277 KB payload, re-sent on every ranking because a data URI
+/// can't be cached. It now sends `hasPhoto` and serves the bytes from
+/// /universities/:id/photo, which the HTTP layer caches and revalidates.
+///
+/// The base64 branch stays for saved rankings generated before that change:
+/// those snapshots still carry a `photo` string.
+ImageProvider? _universityLogoImage(Map u) {
+  final legacy = u['photo'];
+  if (legacy is String && legacy.isNotEmpty) return _decodeAvatarPhoto(legacy);
+  final id = '${u['id'] ?? ''}';
+  if (u['hasPhoto'] == true && id.isNotEmpty) {
+    return NetworkImage('$kBaseUrl/universities/$id/photo');
+  }
+  return null;
+}
+
 ImageProvider? _decodeAvatarPhoto(String? p) {
   if (p == null || p.isEmpty) return null;
   final cached = _photoCache[p];
@@ -645,7 +664,7 @@ Widget universityLogo(Map u, {
   bool circle = false, Color? bg, Color? textColor,
 }) {
   final abbr = '${u['abbr'] ?? ''}';
-  final img = _decodeAvatarPhoto(u['photo'] as String?);
+  final img = _universityLogoImage(u);
   final bgColor = bg ?? C.uni(abbr);
   final txtColor = textColor ?? C.gold;
   if (circle) {

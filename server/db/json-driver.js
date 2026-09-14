@@ -207,6 +207,13 @@ module.exports = {
     return out;
   },
 
+  // Just the photo, so the image endpoint doesn't hydrate a whole university
+  // (campuses, ratings, staff blob) to serve one file.
+  async getUniversityPhoto(id) {
+    const u = db.universities.find(x => x.id === id);
+    return (u && u.photo) || null;
+  },
+
   async listUniversities() { return db.universities.map(u => ({ ...u, ...ratingSummary(u.id), ...staffExtras(u.id) })); },
   async getUniversity(id) {
     const u = db.universities.find(x => x.id === id);

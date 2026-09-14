@@ -349,6 +349,13 @@ module.exports = {
     return out;
   },
 
+  // Single-column read -- see json-driver for why this exists.
+  async getUniversityPhoto(id) {
+    const p2 = await getPool();
+    const [rows] = await p2.query('SELECT photo FROM universities WHERE id=?', [id]);
+    return rows.length ? (rows[0].photo || null) : null;
+  },
+
   async listUniversities() {
     const p = await getPool();
     const [rows] = await p.query('SELECT * FROM universities');
