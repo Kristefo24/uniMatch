@@ -27,6 +27,12 @@ const UNI_ID = 'uni-urcmhs';
 // 0 removes the university only and leaves every account untouched.
 const sIdx = process.argv.indexOf('--students');
 const DORMANT_TARGET = sIdx !== -1 ? Number(process.argv[sIdx + 1]) : 58;
+// Accounts that must never be deleted however dormant they look -- e.g. the
+// owner's own sign-ins, which predate a bulk import and are easy to lose in a
+// count-based cull. Comma-separated emails: --keep a@x.com,b@y.com
+const kIdx = process.argv.indexOf('--keep');
+const PROTECTED = new Set(
+  (kIdx !== -1 ? (process.argv[kIdx + 1] || '') : '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 
 let pg;
 try { pg = require('pg'); }
@@ -58,6 +64,7 @@ async function connect() {
     password: decodeURIComponent(u.password),
     database: u.pathname.replace(/^\//, ''),
     ssl: { rejectUnauthorized: false, servername: u.hostname },
+    keepAlive: true, statement_timeout: 120000, query_timeout: 120000,
   });
   return pool;
 }
@@ -109,7 +116,12 @@ function hr(title) { console.log('\n' + title + '\n' + '-'.repeat(title.length))
   for (const [t, rows] of Object.entries(urc)) console.log(`  ${String(rows.length).padStart(4)}  ${t}`);
 
   // saved top-5 snapshots that mention the university
-  const snaps = (await q('SELECT user_id, university_ids FROM user_last_ranking')).rows;
+  // Each snapshot embeds full university objects including base64 logos, so
+  // pulling every row moves megabytes for no reason -- filter server-side to
+  // the few that actually mention this university.
+  const snaps = (await q(
+    "SELECT user_id, university_ids FROM user_last_ranking WHERE university_ids LIKE '%' || $1 || '%'",
+    [UNI_ID])).rows;
   const snapEdits = [];
   for (const s of snaps) {
     let arr;
@@ -123,8 +135,11 @@ function hr(title) { console.log('\n' + title + '\n' + '-'.repeat(title.length))
   console.log(`  ${String(snapEdits.length).padStart(4)}  saved rankings containing UR-CMHS (will be rewritten)`);
 
   hr('Dormant students');
-  const dormant = (await q(DORMANT_SQL)).rows;
-  console.log(`  ${dormant.length} dormant of ${students} students; ${DORMANT_TARGET} required`);
+  const all = (await q(DORMANT_SQL)).rows;
+  const dormant = all.filter(u => !PROTECTED.has((u.email || '').toLowerCase()));
+  const kept = all.length - dormant.length;
+  console.log(`  ${all.length} dormant of ${students} students; ${DORMANT_TARGET} required`);
+  if (kept) console.log(`  ${kept} protected by --keep and excluded from selection`);
   if (dormant.length < DORMANT_TARGET) {
     console.error(`\nABORT: only ${dormant.length} dormant accounts exist, fewer than the ${DORMANT_TARGET} requested.`);
     console.error('Refusing to delete active accounts to make up the number.');
