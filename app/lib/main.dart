@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInputFormatter, TextEditingValue;
-import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_map/flutter_map.dart'
@@ -967,13 +966,12 @@ class UniMatchApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: base.copyWith(
         // Body text: clean grotesque sans, matching the prototype.
-        textTheme: GoogleFonts.manropeTextTheme(base.textTheme).apply(
-          bodyColor: C.ink, displayColor: C.ink,
-        ),
+        textTheme: base.textTheme
+            .apply(fontFamily: 'Manrope', bodyColor: C.ink, displayColor: C.ink),
         appBarTheme: AppBarTheme(
           backgroundColor: C.cream, elevation: 0, foregroundColor: C.ink,
           centerTitle: false,
-          titleTextStyle: GoogleFonts.bricolageGrotesque(
+          titleTextStyle: const TextStyle(fontFamily: 'BricolageGrotesque',
               fontSize: 19, fontWeight: FontWeight.w600, color: C.ink, letterSpacing: -0.3),
         ),
       ),
@@ -1001,7 +999,8 @@ final RouteObserver<PageRoute> routeObserver = RouteObserver<PageRoute>();
 
 /// Prototype display font (Bricolage Grotesque) for headlines.
 TextStyle head(double size, {Color color = C.ink, FontWeight weight = FontWeight.w600}) =>
-    GoogleFonts.bricolageGrotesque(fontSize: size, fontWeight: weight, color: color, letterSpacing: -0.5, height: 1.05);
+    TextStyle(fontFamily: 'BricolageGrotesque',
+        fontSize: size, fontWeight: weight, color: color, letterSpacing: -0.5, height: 1.05);
 
 /// ---- Shared widgets --------------------------------------------------------
 Widget primaryButton(String label, VoidCallback? onTap, {bool loading = false}) {
@@ -1993,7 +1992,7 @@ class _StudentHomeState extends State<StudentHome> {
                     width: 40, height: 40,
                     decoration: BoxDecoration(color: C.green, borderRadius: BorderRadius.circular(999)),
                     alignment: Alignment.center,
-                    child: Text(initials, style: GoogleFonts.bricolageGrotesque(
+                    child: Text(initials, style: TextStyle(fontFamily: 'BricolageGrotesque', 
                         color: const Color(0xFFF5E7B8), fontWeight: FontWeight.w600, fontSize: 14)),
                   ),
                 )),
@@ -2558,7 +2557,7 @@ class _CompareScreenState extends State<CompareScreen> {
 /// Detail hero stat + divider.
 Widget _heroStat(String value, String label) => Expanded(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(value, style: GoogleFonts.bricolageGrotesque(
+        Text(value, style: TextStyle(fontFamily: 'BricolageGrotesque', 
             color: const Color(0xFFFBF8F3), fontSize: 26, fontWeight: FontWeight.w500, height: 1)),
         const SizedBox(height: 4),
         Text(label, style: const TextStyle(color: Color(0xFFF5C955), fontSize: 9, letterSpacing: 0.8)),
@@ -3470,7 +3469,7 @@ class _CriteriaScreenState extends State<CriteriaScreen> {
                 width: 42, height: 42,
                 decoration: const BoxDecoration(color: C.gold, shape: BoxShape.circle),
                 alignment: Alignment.center,
-                child: Text('${selected.length}', style: GoogleFonts.bricolageGrotesque(
+                child: Text('${selected.length}', style: TextStyle(fontFamily: 'BricolageGrotesque', 
                     color: C.green, fontWeight: FontWeight.w600, fontSize: 16)),
               ),
               const SizedBox(width: 12),
@@ -4436,7 +4435,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                         fontSize: 11, color: top1 ? const Color(0xFFCDE3DA) : C.muted)),
                                   ])),
                                   Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                                    Text(pct, style: GoogleFonts.bricolageGrotesque(
+                                    Text(pct, style: TextStyle(fontFamily: 'BricolageGrotesque', 
                                         fontWeight: FontWeight.w600, fontSize: 22, height: 1,
                                         color: top1 ? C.gold : C.green)),
                                     Text('Score', style: TextStyle(fontFamily: 'monospace', fontSize: 9.5,
@@ -4707,7 +4706,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     opacity: collapsed ? 1 : 0,
                     child: Text('${u['name'] ?? widget.name}',
                         maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.bricolageGrotesque(
+                        style: TextStyle(fontFamily: 'BricolageGrotesque', 
                             color: Colors.white, fontSize: 17, fontWeight: FontWeight.w500)),
                   );
                 }),
@@ -4729,7 +4728,7 @@ class _DetailScreenState extends State<DetailScreen> {
                             universityLogo(u, size: 52, radius: 13, fontSize: 15,
                                 bg: const Color(0xFFF5E7B8), textColor: crest),
                             const SizedBox(width: 12),
-                            Expanded(child: Text('${u['name'] ?? widget.name}', style: GoogleFonts.bricolageGrotesque(
+                            Expanded(child: Text('${u['name'] ?? widget.name}', style: TextStyle(fontFamily: 'BricolageGrotesque', 
                                 color: const Color(0xFFFBF8F3), fontSize: 20, fontWeight: FontWeight.w500, height: 1.15))),
                           ]),
                           const SizedBox(height: 18),
@@ -5198,7 +5197,7 @@ class _StaffDashboardState extends State<StaffDashboard> {
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(value, style: GoogleFonts.bricolageGrotesque(fontWeight: FontWeight.w600, fontSize: 22, color: C.green)),
+            Text(value, style: TextStyle(fontFamily: 'BricolageGrotesque', fontWeight: FontWeight.w600, fontSize: 22, color: C.green)),
             const SizedBox(height: 2),
             Text(label, style: const TextStyle(color: C.muted, fontSize: 11)),
           ]),

@@ -15,7 +15,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.2.2
   url_launcher: ^6.3.0
-  google_fonts: ^6.2.1
   flutter_map: ^7.0.0
   latlong2: ^0.9.1
   image_picker: ^1.1.2
@@ -28,3 +27,25 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # Bundled rather than fetched through google_fonts at runtime: the first
+  # screen to use a face otherwise waits on a download from fonts.gstatic.com,
+  # which on a slow link stalled rendering -- most visibly on logout, which
+  # lands on the onboarding screen and its Bricolage Grotesque headline.
+  fonts:
+    - family: Manrope
+      fonts:
+        - asset: assets/fonts/Manrope-400.ttf
+          weight: 400
+        - asset: assets/fonts/Manrope-600.ttf
+          weight: 600
+        - asset: assets/fonts/Manrope-700.ttf
+          weight: 700
+    - family: BricolageGrotesque
+      fonts:
+        - asset: assets/fonts/BricolageGrotesque-500.ttf
+          weight: 500
+        - asset: assets/fonts/BricolageGrotesque-600.ttf
+          weight: 600
+        - asset: assets/fonts/BricolageGrotesque-700.ttf
+          weight: 700
