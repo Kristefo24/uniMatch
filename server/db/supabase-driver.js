@@ -175,6 +175,8 @@ function buildUniversity(u, camps, valsMap, rating, sd) {
     avgRating: rating && rating.avg != null ? Number(Number(rating.avg).toFixed(2)) : null,
     ratingCount: (rating && rating.n) || 0,
     combos: sd.combos || {},
+    // Raw staff-entered answers -- see json-driver for why /rank embeds these.
+    staffAnswers: c,
     religiousBased: !!c.religiousBased,
     religion: c.religion || null,
     schoolLocation: c.schoolLocation || null,

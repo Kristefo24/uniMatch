@@ -193,6 +193,8 @@ async function hydrateUniversity(u) {
     avgRating: rt.avg != null ? Number(Number(rt.avg).toFixed(2)) : null,
     ratingCount: rt.n || 0,
     combos: sd.combos || {},
+    // Raw staff-entered answers -- see json-driver for why /rank embeds these.
+    staffAnswers: (sd.criteria || {}),
     religiousBased: !!(sd.criteria && sd.criteria.religiousBased),
     religion: (sd.criteria && sd.criteria.religion) || null,
     schoolLocation: (sd.criteria && sd.criteria.schoolLocation) || null,

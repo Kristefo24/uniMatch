@@ -584,11 +584,26 @@ class Session {
 
 /// Decodes a photo data: URI (e.g. "data:image/jpeg;base64,...") into an
 /// ImageProvider, or null if unset/unparseable.
+/// Decoded logos/avatars, keyed by the data URI they came from.
+///
+/// MemoryImage compares by byte-list identity, so handing Flutter a freshly
+/// decoded Uint8List on every build missed the image cache every time and
+/// re-decoded the picture. With a logo on each ranked card that meant several
+/// base64 decodes per frame while scrolling. Caching the provider makes the
+/// decode happen once per distinct image.
+final Map<String, ImageProvider> _photoCache = {};
+
 ImageProvider? _decodeAvatarPhoto(String? p) {
   if (p == null || p.isEmpty) return null;
+  final cached = _photoCache[p];
+  if (cached != null) return cached;
   try {
     final b64 = p.contains(',') ? p.split(',').last : p;
-    return MemoryImage(base64Decode(b64));
+    final img = MemoryImage(base64Decode(b64));
+    // Bounded so a long session can't accumulate every photo it ever saw.
+    if (_photoCache.length > 40) _photoCache.clear();
+    _photoCache[p] = img;
+    return img;
   } catch (_) {
     return null;
   }
@@ -4064,8 +4079,15 @@ class _ResultsScreenState extends State<ResultsScreen> {
             budgetMax: Session.budgetMax);
     _future = rankFuture.then((r) async {
       Session.lastRanking = r;
+      // /rank now embeds each university's staff answers, so this no longer
+      // costs one extra request per ranked university. A saved ranking
+      // replayed from an older session may predate that field, so fall back
+      // to fetching only for the entries that are actually missing it.
       final entries = await Future.wait(r.map((u) async {
-        final id = (u as Map)['id'] as String;
+        final m = u as Map;
+        final id = m['id'] as String;
+        final embedded = m['staffAnswers'];
+        if (embedded is Map) return MapEntry(id, Map<String, dynamic>.from(embedded));
         try {
           final d = await Api.universityAnswers(id);
           return MapEntry(id, Map<String, dynamic>.from((d['criteria'] as Map?) ?? {}));

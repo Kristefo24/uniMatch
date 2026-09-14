@@ -144,6 +144,9 @@ function staffExtras(uniId) {
   const c = (sd && sd.criteria) || {};
   return {
     combos: (sd && sd.combos) || {},
+    // The raw staff-entered answers. /rank embeds these so the client doesn't
+    // have to fetch /universities/:id/answers once per ranked university.
+    staffAnswers: c,
     religiousBased: !!c.religiousBased,
     religion: c.religion || null,
     schoolLocation: c.schoolLocation || null,

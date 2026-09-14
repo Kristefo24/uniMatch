@@ -327,6 +327,10 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
       id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, cc: Number(u.cc.toFixed(4)),
       bestCode: u.bestCode || null, weakCodes: u.weakCodes || [],
       vals: u.vals || {}, combos: u.combos || {},
+      // Embedded so the results screen doesn't have to fetch
+      // /universities/:id/answers once per ranked university -- that was one
+      // extra round trip each, on top of this response.
+      staffAnswers: u.staffAnswers || {},
     }));
   if (deptEligibleIds) {
     const deptMatches = ranked.filter(u => deptEligibleIds.has(u.id));
@@ -583,23 +587,85 @@ app.get('/admin/report/applicants.xlsx', auth(), requireRole('admin'), wrap(asyn
   }
 
   const used = new Set();
+  const generated = new Date().toISOString().slice(0, 10);
   for (const [uniName, applicants] of byUniversity) {
     const sheet = workbook.addWorksheet(safeSheetName(uniName, used));
+
+    // Title block, then a header row on row 4 -- same shape across every sheet
+    // so a reader moving between universities always finds the table in the
+    // same place.
+    sheet.mergeCells('A1:D1');
+    sheet.getCell('A1').value = `${uniName} — A2 applicants`;
+    sheet.getCell('A1').font = { name: 'Arial', size: 13, bold: true, color: { argb: 'FF1B1D1B' } };
+    sheet.mergeCells('A2:D2');
+    sheet.getCell('A2').value = `UniMatch · generated ${generated}`;
+    sheet.getCell('A2').font = { name: 'Arial', size: 9, italic: true, color: { argb: 'FF5E625E' } };
+    sheet.getRow(1).height = 20;
+
     sheet.columns = [
-      { header: 'Student', key: 'student', width: 28 },
-      { header: 'Email', key: 'email', width: 30 },
-      { header: 'Home area', key: 'home', width: 22 },
-      { header: 'Date', key: 'date', width: 14 },
+      { key: 'student', width: 30 },
+      { key: 'email', width: 32 },
+      { key: 'home', width: 24 },
+      { key: 'date', width: 14 },
     ];
-    sheet.getRow(1).font = { bold: true };
-    for (const a of applicants) {
-      sheet.addRow({
-        student: titleCase(a.student || ''),
-        email: a.email || '',
-        home: a.home || '',
-        date: (a.date && String(a.date).trim()) ? a.date : REPORT_MISSING_DATE,
-      });
+
+    const head = sheet.getRow(4);
+    ['Student', 'Email', 'Home area', 'Date'].forEach((h, i) => {
+      const cell = head.getCell(i + 1);
+      cell.value = h;
+      cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F6D3F' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+    head.height = 18;
+
+    applicants.forEach((a, i) => {
+      const row = sheet.getRow(5 + i);
+      row.getCell(1).value = titleCase(a.student || '');
+      row.getCell(2).value = a.email || '';
+      row.getCell(3).value = a.home || '';
+      row.getCell(4).value = (a.date && String(a.date).trim()) ? a.date : REPORT_MISSING_DATE;
+      for (let c = 1; c <= 4; c++) {
+        const cell = row.getCell(c);
+        cell.font = { name: 'Arial', size: 10 };
+        if (i % 2 === 1) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F6F3' } };
+        if (c === 4) cell.alignment = { horizontal: 'center' };
+      }
+    });
+
+    // Thin borders across the whole table, header included.
+    const last = 4 + applicants.length;
+    const edge = { style: 'thin', color: { argb: 'FFD6D8D4' } };
+    for (let r = 4; r <= Math.max(last, 4); r++) {
+      for (let c = 1; c <= 4; c++) {
+        sheet.getRow(r).getCell(c).border = { top: edge, left: edge, bottom: edge, right: edge };
+      }
     }
+
+    const totalRow = sheet.getRow(last + 2);
+    totalRow.getCell(1).value = 'Total applicants';
+    totalRow.getCell(1).font = { name: 'Arial', size: 10, bold: true };
+    // A formula, not a baked number, so the count follows any edits.
+    totalRow.getCell(2).value = { formula: `COUNTA(B5:B${Math.max(last, 5)})` };
+    totalRow.getCell(2).font = { name: 'Arial', size: 10, bold: true };
+    if (!applicants.length) {
+      sheet.getCell('A5').value = 'No applicants recorded for this university.';
+      sheet.getCell('A5').font = { name: 'Arial', size: 10, italic: true, color: { argb: 'FF5E625E' } };
+    }
+
+    sheet.views = [{ state: 'frozen', ySplit: 4 }];
+    sheet.autoFilter = { from: 'A4', to: `D${Math.max(last, 4)}` };
+
+    // Read-only: the workbook is a record of what the system held when it was
+    // generated, so it opens for anyone but cannot be altered and passed on as
+    // if it were still authoritative. Selecting and copying stay allowed.
+    await sheet.protect(process.env.REPORT_LOCK_PASSWORD || 'unimatch', {
+      selectLockedCells: true,
+      selectUnlockedCells: true,
+      formatCells: false, formatColumns: false, formatRows: false,
+      insertRows: false, insertColumns: false, deleteRows: false, deleteColumns: false,
+      sort: false, autoFilter: false, pivotTables: false,
+    });
   }
 
   const buffer = await workbook.xlsx.writeBuffer();
