@@ -2572,6 +2572,428 @@ class _CompareScreenState extends State<CompareScreen> {
       );
 }
 
+
+/// ---- Compare & rate pop-ups on the ranking page ---------------------------
+
+/// One criterion's 0-100 standing for the two universities being compared.
+class _CriterionScore {
+  final String code;
+  final double left, right;
+  final bool leftMissing, rightMissing;
+  const _CriterionScore(this.code, this.left, this.right, this.leftMissing, this.rightMissing);
+  int get l => left.round();
+  int get r => right.round();
+  // Compared on the rounded numbers the graduate actually sees, so nothing is
+  // ever hidden over a difference too small to have been displayed.
+  bool get tied => l == r;
+}
+
+/// Scores each of the graduate's chosen criteria out of 100 for two of their
+/// matched universities: 100 is the best result on their own matches list, 0
+/// the worst. Direction-aware, so on a cost criterion (tuition, distance from
+/// home) the cheaper or nearer university scores higher.
+///
+/// A university with no recorded value is scored as if it held the worst real
+/// value in that column -- exactly what server/topsis.js does when it builds
+/// the decision matrix -- so a blank is never flattered into looking good. The
+/// row is flagged so the sheet can say the figure is missing rather than bad.
+///
+/// This re-presents the same inputs TOPSIS ranked on; it is not a second
+/// algorithm, and the sheet still shows the overall score the cards carry.
+List<_CriterionScore> _criterionScores({
+  required List<dynamic> ranked,
+  required List<dynamic> criteria,
+  required Map left,
+  required Map right,
+}) {
+  final out = <_CriterionScore>[];
+  for (final raw in criteria) {
+    final c = raw as Map;
+    final code = '${c['code']}';
+    final cost = '${c['direction'] ?? 'benefit'}' == 'cost';
+    final known = <double>[];
+    for (final r in ranked) {
+      final v = ((r as Map)['vals'] as Map?)?[code];
+      if (v is num) known.add(v.toDouble());
+    }
+    // Nobody on the list has data for this criterion -- there is nothing
+    // honest to compare, so it is left out entirely.
+    if (known.isEmpty) continue;
+    final lo = known.reduce(math.min);
+    final hi = known.reduce(math.max);
+    double? valueOf(Map u) {
+      final v = (u['vals'] as Map?)?[code];
+      return v is num ? v.toDouble() : null;
+    }
+    final lv = valueOf(left);
+    final rv = valueOf(right);
+    final fallback = cost ? hi : lo; // the worst real value, per direction
+    double score(double? v) {
+      if (hi == lo) return 100; // every university identical here
+      final x = v ?? fallback;
+      return cost ? 100 * (hi - x) / (hi - lo) : 100 * (x - lo) / (hi - lo);
+    }
+    out.add(_CriterionScore(code, score(lv), score(rv), lv == null, rv == null));
+  }
+  return out;
+}
+
+/// The criterion-by-criterion pop-up opened from a ranked card's menu. Stays
+/// over the ranking instead of pushing CompareScreen, which compares every
+/// criterion in the system rather than the ones this graduate chose.
+void showCompareSheet(
+  BuildContext context, {
+  required Map fixed,
+  required List<dynamic> ranked,
+  required List<dynamic> criteria,
+  required Map<String, String> labelByCode,
+}) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: C.cream,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+    builder: (_) => _CompareSheet(
+        fixed: fixed, ranked: ranked, criteria: criteria, labelByCode: labelByCode),
+  );
+}
+
+class _CompareSheet extends StatefulWidget {
+  /// The university whose card was tapped -- pinned on the left, never changes.
+  final Map fixed;
+  final List<dynamic> ranked;
+  final List<dynamic> criteria;
+  final Map<String, String> labelByCode;
+  const _CompareSheet({
+    required this.fixed, required this.ranked, required this.criteria, required this.labelByCode});
+  @override
+  State<_CompareSheet> createState() => _CompareSheetState();
+}
+
+class _CompareSheetState extends State<_CompareSheet> {
+  static const _rightColor = Color(0xFFC25A1F); // same left/right pairing CompareScreen uses
+  Map? _other;
+
+  @override
+  void initState() {
+    super.initState();
+    // Open on the best-ranked university that isn't the fixed one, so the
+    // sheet says something the moment it appears.
+    for (final u in widget.ranked) {
+      if ((u as Map)['id'] != widget.fixed['id']) {
+        _other = u;
+        break;
+      }
+    }
+  }
+
+  int _overall(Map? u) => u == null ? 0 : (((u['cc'] as num?)?.toDouble() ?? 0) * 100).round();
+
+  Future<void> _pickOther() async {
+    final chosen = await showModalBottomSheet<Map>(
+      context: context,
+      backgroundColor: C.cream,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text('Compare with', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
+            ),
+            ...widget.ranked.where((u) => (u as Map)['id'] != widget.fixed['id']).map((u) {
+              final m = u as Map;
+              return ListTile(
+                leading: universityLogo(m, size: 32, fontSize: 10, circle: true),
+                title: Text('${m['name']}', style: const TextStyle(fontSize: 13)),
+                trailing: Text('${_overall(m)}',
+                    style: const TextStyle(fontWeight: FontWeight.w700, color: C.muted, fontSize: 12)),
+                selected: m['id'] == _other?['id'],
+                onTap: () => Navigator.pop(ctx, m),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+    if (chosen != null && mounted) setState(() => _other = chosen);
+  }
+
+  Widget _slot(Map? u, Color color, {VoidCallback? onChange}) => Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            if (u != null) ...[
+              universityLogo(u, size: 30, radius: 9, fontSize: 9),
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: Text('${u?['abbr'] ?? '—'}',
+                  style: TextStyle(fontWeight: FontWeight.w700, color: color, fontSize: 14),
+                  overflow: TextOverflow.ellipsis),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          Text('${_overall(u)} / 100 overall', style: const TextStyle(color: C.muted, fontSize: 11)),
+          if (onChange != null) ...[
+            const SizedBox(height: 6),
+            GestureDetector(
+              onTap: onChange,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: color.withValues(alpha: 0.35))),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.swap_horiz, size: 13, color: color),
+                  const SizedBox(width: 5),
+                  Text('Change', style: TextStyle(color: color, fontSize: 11.5, fontWeight: FontWeight.w600)),
+                ]),
+              ),
+            ),
+          ],
+        ]),
+      );
+
+  Widget _bar(String abbr, int score, Color color, bool missing) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Row(children: [
+          SizedBox(
+            width: 58,
+            child: Text(abbr,
+                style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: color),
+                overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: score / 100,
+                minHeight: 7,
+                backgroundColor: C.sand,
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 38,
+            child: Text(missing ? '—' : '$score',
+                textAlign: TextAlign.right,
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: color)),
+          ),
+        ]),
+      );
+
+  /// "A, B and C" -- so the explanation names the hidden criteria instead of
+  /// just counting them.
+  String _list(List<String> labels) => labels.length == 1
+      ? labels.first
+      : '${labels.sublist(0, labels.length - 1).join(', ')} and ${labels.last}';
+
+  @override
+  Widget build(BuildContext context) {
+    final other = _other;
+    final scores = other == null
+        ? <_CriterionScore>[]
+        : _criterionScores(
+            ranked: widget.ranked, criteria: widget.criteria, left: widget.fixed, right: other);
+    final shown = scores.where((s) => !s.tied).toList();
+    final hidden = scores.where((s) => s.tied).toList();
+    final leftAbbr = '${widget.fixed['abbr'] ?? ''}';
+    final rightAbbr = '${other?['abbr'] ?? ''}';
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      minChildSize: 0.45,
+      maxChildSize: 0.92,
+      builder: (ctx, scrollController) => Column(children: [
+        // Pinned header -- the two universities stay in view while the
+        // criteria scroll beneath them.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Center(
+              child: Container(
+                width: 38,
+                height: 4,
+                decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(999)),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              _slot(widget.fixed, C.green),
+              const SizedBox(width: 12),
+              _slot(other, _rightColor, onChange: _pickOther),
+            ]),
+            const SizedBox(height: 12),
+            const Text(
+                'Scored out of 100 on the criteria you chose — 100 is the best result on your matches list.',
+                style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.4)),
+          ]),
+        ),
+        const Divider(height: 1, color: C.border),
+        Expanded(
+          child: ListView(
+            controller: scrollController,
+            padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+            children: [
+              ...shown.map((s) {
+                final label = widget.labelByCode[s.code] ?? s.code;
+                final leftAhead = s.l > s.r;
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                  decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: C.border)),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Expanded(child: Text(label, style: const TextStyle(color: C.ink, fontSize: 13))),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                            color: (leftAhead ? C.green : _rightColor).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(999)),
+                        child: Text('${leftAhead ? leftAbbr : rightAbbr} ahead',
+                            style: TextStyle(
+                                color: leftAhead ? C.green : _rightColor,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ]),
+                    _bar(leftAbbr, s.l, C.green, s.leftMissing),
+                    _bar(rightAbbr, s.r, _rightColor, s.rightMissing),
+                    if (s.leftMissing || s.rightMissing)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                            s.leftMissing && s.rightMissing
+                                ? 'Neither university has recorded a figure here, so both are scored as the lowest on your list.'
+                                : '${s.leftMissing ? leftAbbr : rightAbbr} has not recorded a figure here, so it is scored as the lowest on your list.',
+                            style: const TextStyle(
+                                color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic, height: 1.3)),
+                      ),
+                  ]),
+                );
+              }),
+              if (hidden.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    shown.isEmpty
+                        ? '$leftAbbr and $rightAbbr scored exactly the same on every criterion you chose, so there is nothing here to tell them apart. Compare with a different university, or add more criteria to your search.'
+                        : '${_list(hidden.map((s) => widget.labelByCode[s.code] ?? s.code).toList())} '
+                            '${hidden.length == 1 ? 'is' : 'are'} not shown: both universities scored the same there, '
+                            'so ${hidden.length == 1 ? 'it does' : 'they do'} not help you choose between them.',
+                    style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.45),
+                  ),
+                ),
+              if (other == null)
+                const Padding(
+                  padding: EdgeInsets.only(top: 20),
+                  child: Text('There is no other university on your matches list to compare with.',
+                      textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontSize: 12)),
+                ),
+            ],
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+/// The same 5-star control the university detail page carries, reachable
+/// straight from a ranked card so a graduate can rate without leaving their
+/// matches list.
+void showRateSheet(BuildContext context, Map u) {
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: C.cream,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+    builder: (_) => _RateSheet(uni: u),
+  );
+}
+
+class _RateSheet extends StatefulWidget {
+  final Map uni;
+  const _RateSheet({required this.uni});
+  @override
+  State<_RateSheet> createState() => _RateSheetState();
+}
+
+class _RateSheetState extends State<_RateSheet> {
+  int _stars = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    // Remembers what this graduate already gave, so reopening the sheet shows
+    // their rating rather than an empty row of stars.
+    Api.myRating('${widget.uni['id']}').then((s) {
+      if (mounted) setState(() => _stars = s ?? 0);
+    }).catchError((_) {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final avg = (widget.uni['avgRating'] as num?)?.toDouble();
+    final count = (widget.uni['ratingCount'] as num?)?.toInt() ?? 0;
+    final vals = (widget.uni['vals'] as Map?) ?? {};
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            universityLogo(widget.uni, size: 38, radius: 11, fontSize: 11),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Rate ${widget.uni['name'] ?? ''}',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: C.ink)),
+                Text(
+                  count > 0
+                      ? '${avg?.toStringAsFixed(1)} ★ ($count rating${count == 1 ? '' : 's'})'
+                      : 'No ratings yet',
+                  style: const TextStyle(color: C.muted, fontSize: 11.5),
+                ),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          // Same guard the detail page applies: a university that has never
+          // filled in its criteria answers has nothing behind it to rate.
+          if (vals.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text('This university hasn\'t set up its criteria answers yet, so it can\'t be rated.',
+                  style: TextStyle(color: C.muted, fontSize: 11.5, fontStyle: FontStyle.italic)),
+            )
+          else
+            Row(
+              children: List.generate(5, (i) {
+                return IconButton(
+                  onPressed: () async {
+                    setState(() => _stars = i + 1);
+                    try {
+                      await Api.rate('${widget.uni['id']}', i + 1);
+                      if (context.mounted) toast(context, 'Thanks — rated ${i + 1} star${i == 0 ? '' : 's'}');
+                    } catch (e) {
+                      if (context.mounted) toast(context, e.toString());
+                    }
+                  },
+                  icon: Icon(i < _stars ? Icons.star : Icons.star_border, color: C.gold, size: 30),
+                );
+              }),
+            ),
+        ]),
+      ),
+    );
+  }
+}
 /// Prettify a raw staff answer key (e.g. "partnerSchools" → "Partner schools").
 /// Detail hero stat + divider.
 Widget _heroStat(String value, String label) => Expanded(
@@ -4313,6 +4735,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
         const PopupMenuItem(value: 'details', child: Text('Details')),
         PopupMenuItem(value: 'reason', child: Text('Reason to rank #${i + 1}')),
         const PopupMenuItem(value: 'contacts', child: Text('University contacts')),
+        const PopupMenuItem(value: 'rate', child: Text('Rate this university')),
         const PopupMenuItem(value: 'compare', child: Text('Compare')),
         const PopupMenuItem(value: 'shortlist', child: Text('Add to shortlist')),
       ],
@@ -4328,8 +4751,15 @@ class _ResultsScreenState extends State<ResultsScreen> {
       case 'contacts':
         _openContactsSheet(context, u['id'] as String, '${u['name'] ?? ''}');
         break;
+      case 'rate':
+        showRateSheet(context, u);
+        break;
       case 'compare':
-        Navigator.push(context, MaterialPageRoute(builder: (_) => CompareScreen(initialLeftId: u['id'] as String)));
+        // A sheet over the ranking, scored only on the criteria this graduate
+        // chose -- CompareScreen walks every criterion in the system and is
+        // still what the drawer/results-page button opens.
+        showCompareSheet(context,
+            fixed: u, ranked: ranked, criteria: widget.criteria, labelByCode: labelByCode);
         break;
       case 'shortlist':
         try {

@@ -356,6 +356,10 @@ app.post('/rank', auth(false), wrap(async (req, res) => {
       hasPhoto: !!u.photo,
       bestCode: u.bestCode || null, weakCodes: u.weakCodes || [],
       vals: u.vals || {}, combos: u.combos || {},
+      // Two numbers, so the ranking page's "Rate this university" sheet can
+      // show the current average without a round trip per card.
+      avgRating: u.avgRating != null ? u.avgRating : null,
+      ratingCount: u.ratingCount || 0,
       // Embedded so the results screen doesn't have to fetch
       // /universities/:id/answers once per ranked university -- that was one
       // extra round trip each, on top of this response.
