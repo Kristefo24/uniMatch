@@ -56,25 +56,36 @@ function topsis(universities, criteria) {
   // university sits closest to (its single strongest contributor) and
   // which ones it's genuinely on the weak side of (up to 3) -- lets the UI
   // explain a ranking instead of showing a bare number.
+  // Only criteria the universities actually differ on can explain anything.
+  // Where every university holds the same value, ideal-best equals
+  // ideal-worst, so EVERY university sits at distance 0 from the ideal --
+  // which would otherwise win "closest to ideal" outright and be reported as
+  // their single greatest strength. Library access, held by all six, is not
+  // what makes any one of them stand out.
+  const discriminating = criteria.map((_, j) => j).filter(j => best[j] !== worst[j]);
+
   return universities.map((u, i) => {
     const dPlus = Math.sqrt(weighted[i].reduce((s, v, j) => s + (v - best[j]) ** 2, 0));
     const dMinus = Math.sqrt(weighted[i].reduce((s, v, j) => s + (v - worst[j]) ** 2, 0));
     const cc = (dPlus + dMinus) === 0 ? 0 : dMinus / (dPlus + dMinus);
     const distToBest = weighted[i].map((v, j) => Math.abs(v - best[j]));
     const distToWorst = weighted[i].map((v, j) => Math.abs(v - worst[j]));
-    const bestJ = distToBest.indexOf(Math.min(...distToBest));
+    // Nothing separates these universities at all -> no strength to name,
+    // and the UI omits the pill rather than inventing one.
+    const bestJ = discriminating.length
+      ? discriminating.reduce((a, b) => (distToBest[b] < distToBest[a] ? b : a))
+      : -1;
     // "Weak" = genuinely closer to the ideal-worst than the ideal-best for
     // that criterion, not just "less good than the strongest one" -- a
     // university with no real weak points shows none, never fabricated
     // padding to reach 3. Worst-first, capped at 3, excluding whatever's
     // already shown as the strongest so the two never name the same thing.
-    const weakCodes = criteria
-      .map((c, j) => j)
+    const weakCodes = discriminating
       .filter(j => j !== bestJ && distToWorst[j] < distToBest[j])
       .sort((a, b) => distToBest[b] - distToBest[a])
       .slice(0, 3)
       .map(j => criteria[j].code);
-    return { ...u, cc, bestCode: criteria[bestJ]?.code || null, weakCodes };
+    return { ...u, cc, bestCode: bestJ === -1 ? null : (criteria[bestJ]?.code || null), weakCodes };
   }).sort((a, b) => b.cc - a.cc);
 }
 

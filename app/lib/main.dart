@@ -2588,18 +2588,38 @@ class _CriterionScore {
   bool get tied => l == r;
 }
 
+/// Less-is-better criteria measured as an *amount* -- money owed, kilometres
+/// travelled -- where none at all is the ideal rather than a failure. A budget
+/// gap of 0 means the fee fits perfectly; 0 km means home is on campus. Every
+/// other less-is-better criterion counts something that cannot honestly be
+/// zero (a class of nobody, a national ranking position of 0), so a 0 there is
+/// a data error and is scored as such.
+const _kZeroIsBest = {'C01', 'C07', 'C09'};
+
+double _clamp100(double v) => v < 0 ? 0 : (v > 100 ? 100 : v);
+
 /// Scores each of the graduate's chosen criteria out of 100 for two of their
-/// matched universities: 100 is the best result on their own matches list, 0
-/// the worst. Direction-aware, so on a cost criterion (tuition, distance from
-/// home) the cheaper or nearer university scores higher.
+/// matched universities, as a *proportion* of the best result on their own
+/// matches list -- not as a finishing position. Two partner companies against
+/// a best of five is 40, because the university genuinely has two; it is not 0
+/// merely for coming last. 0 is reserved for actually having none.
+///
+///  - more is better  ->  value / best * 100
+///  - less is better  ->  smallest / value * 100, so the largest value scores
+///    low but never 0
+///  - less is better and zero is the ideal (see [_kZeroIsBest]) -> 0 scores
+///    100, and when someone sits at 0 the rest are anchored on the smallest
+///    real amount `s` as s / (value + s) * 100, so a perfect fit keeps 100 and
+///    nobody collapses to 0
 ///
 /// A university with no recorded value is scored as if it held the worst real
-/// value in that column -- exactly what server/topsis.js does when it builds
-/// the decision matrix -- so a blank is never flattered into looking good. The
-/// row is flagged so the sheet can say the figure is missing rather than bad.
+/// value in that column -- what server/topsis.js does when it builds the
+/// decision matrix -- so a blank is never flattered. The row is flagged so the
+/// sheet can say the figure is missing rather than bad.
 ///
-/// This re-presents the same inputs TOPSIS ranked on; it is not a second
-/// algorithm, and the sheet still shows the overall score the cards carry.
+/// These scores explain one criterion at a time and do NOT share a
+/// normalisation with the headline score, which is TOPSIS over everything at
+/// once. A university can lead on more rows here and still rank lower overall.
 List<_CriterionScore> _criterionScores({
   required List<dynamic> ranked,
   required List<dynamic> criteria,
@@ -2621,6 +2641,8 @@ List<_CriterionScore> _criterionScores({
     if (known.isEmpty) continue;
     final lo = known.reduce(math.min);
     final hi = known.reduce(math.max);
+    final positives = known.where((v) => v > 0);
+    final loPositive = positives.isEmpty ? null : positives.reduce(math.min);
     double? valueOf(Map u) {
       final v = (u['vals'] as Map?)?[code];
       return v is num ? v.toDouble() : null;
@@ -2629,9 +2651,18 @@ List<_CriterionScore> _criterionScores({
     final rv = valueOf(right);
     final fallback = cost ? hi : lo; // the worst real value, per direction
     double score(double? v) {
-      if (hi == lo) return 100; // every university identical here
       final x = v ?? fallback;
-      return cost ? 100 * (hi - x) / (hi - lo) : 100 * (x - lo) / (hi - lo);
+      if (!cost) return hi <= 0 ? 0 : _clamp100(100 * x / hi);
+      if (_kZeroIsBest.contains(code)) {
+        if (x <= 0 || loPositive == null) return 100; // nothing to pay, nowhere to travel
+        // Someone else is already a perfect fit, so anchoring on the smallest
+        // value would tie them with it -- offset instead.
+        if (lo <= 0) return _clamp100(100 * loPositive / (x + loPositive));
+        return _clamp100(100 * lo / x);
+      }
+      // A count or a position: zero is impossible, so it is bad data, not a win.
+      if (x <= 0 || loPositive == null) return 0;
+      return _clamp100(100 * loPositive / x);
     }
     out.add(_CriterionScore(code, score(lv), score(rv), lv == null, rv == null));
   }
@@ -2673,6 +2704,7 @@ class _CompareSheet extends StatefulWidget {
 class _CompareSheetState extends State<_CompareSheet> {
   static const _rightColor = Color(0xFFC25A1F); // same left/right pairing CompareScreen uses
   Map? _other;
+  bool _showTied = false; // criteria the two score identically on, revealed on tap
 
   @override
   void initState() {
@@ -2757,40 +2789,128 @@ class _CompareSheetState extends State<_CompareSheet> {
         ]),
       );
 
-  Widget _bar(String abbr, int score, Color color, bool missing) => Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: Row(children: [
-          SizedBox(
-            width: 58,
-            child: Text(abbr,
-                style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: color),
-                overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                value: score / 100,
-                minHeight: 7,
-                backgroundColor: C.sand,
-                valueColor: AlwaysStoppedAnimation<Color>(color),
-              ),
+  /// The university's real figure for a criterion, formatted the way the
+  /// detail page already formats it -- "2" partner companies, "94.0%", a
+  /// religion name -- so a score of 40 is visibly two out of five rather than
+  /// looking like nothing at all.
+  ///
+  /// C01 needs care: /rank rewrites vals.C01 into the GAP from the graduate's
+  /// budget range, so the raw value there is not a fee. The staff-entered fee
+  /// is the honest thing to show.
+  String _figure(String code, Map u) {
+    final vals = (u['vals'] as Map?) ?? const {};
+    final staffAnswers = (u['staffAnswers'] as Map?) ?? const {};
+    if (code == 'C01') {
+      final fee = staffAnswers['C01'] ?? vals['C01'];
+      return fee is num ? _fmtRwf(fee) : '—';
+    }
+    final v = _valueForCode(code, vals, staffAnswers, vals['C07'] as num?);
+    return v == null ? '—' : _fmtAnswer(v);
+  }
+
+  Widget _bar(String abbr, String figure, int score, Color color, bool missing, {bool faded = false}) {
+    final c = faded ? C.muted : color;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(children: [
+        SizedBox(
+          width: 52,
+          child: Text(abbr,
+              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: c),
+              overflow: TextOverflow.ellipsis),
+        ),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: score / 100,
+              minHeight: 7,
+              backgroundColor: C.sand,
+              valueColor: AlwaysStoppedAnimation<Color>(c),
             ),
           ),
-          SizedBox(
-            width: 38,
-            child: Text(missing ? '—' : '$score',
-                textAlign: TextAlign.right,
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: color)),
-          ),
-        ]),
-      );
+        ),
+        SizedBox(
+          width: 66,
+          child: Text(missing ? '—' : figure,
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 11, color: C.muted),
+              overflow: TextOverflow.ellipsis),
+        ),
+        SizedBox(
+          width: 34,
+          child: Text(missing ? '—' : '$score',
+              textAlign: TextAlign.right,
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c)),
+        ),
+      ]),
+    );
+  }
 
   /// "A, B and C" -- so the explanation names the hidden criteria instead of
   /// just counting them.
   String _list(List<String> labels) => labels.length == 1
       ? labels.first
       : '${labels.sublist(0, labels.length - 1).join(', ')} and ${labels.last}';
+
+  /// One criterion: its label, who is ahead, and a bar per university showing
+  /// the real figure beside the score. [faded] renders a tied criterion the
+  /// graduate chose to reveal -- greyed, and with no "ahead" badge, because
+  /// neither is.
+  Widget _criterionCard(_CriterionScore s, String leftAbbr, String rightAbbr, Map other,
+      {bool faded = false}) {
+    final label = widget.labelByCode[s.code] ?? s.code;
+    final leftAhead = s.l > s.r;
+    // /rank scores C01 as the distance from the graduate's budget range, so
+    // the number and the bar are measuring different things -- say so rather
+    // than let a cheaper university look wrongly rated.
+    final budgeted = s.code == 'C01' && (Session.budgetMin != null || Session.budgetMax != null);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      decoration: BoxDecoration(
+          color: faded ? C.sand.withValues(alpha: 0.45) : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: C.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(
+              child: Text(label,
+                  style: TextStyle(color: faded ? C.muted : C.ink, fontSize: 13))),
+          if (!faded)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                  color: (leftAhead ? C.green : _rightColor).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(999)),
+              child: Text('${leftAhead ? leftAbbr : rightAbbr} ahead',
+                  style: TextStyle(
+                      color: leftAhead ? C.green : _rightColor,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700)),
+            ),
+        ]),
+        _bar(leftAbbr, _figure(s.code, widget.fixed), s.l, C.green, s.leftMissing, faded: faded),
+        _bar(rightAbbr, _figure(s.code, other), s.r, _rightColor, s.rightMissing, faded: faded),
+        if (budgeted)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text('Scored on how well the fee fits the budget range you set, not on the fee alone.',
+                style: TextStyle(color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic, height: 1.3)),
+          ),
+        if (s.leftMissing || s.rightMissing)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+                s.leftMissing && s.rightMissing
+                    ? 'Neither university has recorded a figure here, so both are scored as the lowest on your list.'
+                    : '${s.leftMissing ? leftAbbr : rightAbbr} has not recorded a figure here, so it is scored as the lowest on your list.',
+                style: const TextStyle(
+                    color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic, height: 1.3)),
+          ),
+      ]),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2829,8 +2949,11 @@ class _CompareSheetState extends State<_CompareSheet> {
               _slot(other, _rightColor, onChange: _pickOther),
             ]),
             const SizedBox(height: 12),
+            // Each row stands on its own -- deliberately not phrased as though
+            // the rows add up to the overall score above, because they don't:
+            // that one weighs every criterion together at once.
             const Text(
-                'Scored out of 100 on the criteria you chose — 100 is the best result on your matches list.',
+                'Each criterion you chose, scored out of 100 against the best result on your matches list.',
                 style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.4)),
           ]),
         ),
@@ -2840,58 +2963,39 @@ class _CompareSheetState extends State<_CompareSheet> {
             controller: scrollController,
             padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
             children: [
-              ...shown.map((s) {
-                final label = widget.labelByCode[s.code] ?? s.code;
-                final leftAhead = s.l > s.r;
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                  decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: C.border)),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Row(children: [
-                      Expanded(child: Text(label, style: const TextStyle(color: C.ink, fontSize: 13))),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                            color: (leftAhead ? C.green : _rightColor).withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(999)),
-                        child: Text('${leftAhead ? leftAbbr : rightAbbr} ahead',
-                            style: TextStyle(
-                                color: leftAhead ? C.green : _rightColor,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700)),
-                      ),
-                    ]),
-                    _bar(leftAbbr, s.l, C.green, s.leftMissing),
-                    _bar(rightAbbr, s.r, _rightColor, s.rightMissing),
-                    if (s.leftMissing || s.rightMissing)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 6),
-                        child: Text(
-                            s.leftMissing && s.rightMissing
-                                ? 'Neither university has recorded a figure here, so both are scored as the lowest on your list.'
-                                : '${s.leftMissing ? leftAbbr : rightAbbr} has not recorded a figure here, so it is scored as the lowest on your list.',
-                            style: const TextStyle(
-                                color: C.muted, fontSize: 10.5, fontStyle: FontStyle.italic, height: 1.3)),
-                      ),
-                  ]),
-                );
-              }),
-              if (hidden.isNotEmpty)
+              ...shown.map((s) => _criterionCard(s, leftAbbr, rightAbbr, other!)),
+              if (hidden.isNotEmpty) ...[
+                // A tie on a ratio scale means the two hold exactly the same
+                // figure, so these rows genuinely cannot separate them -- but
+                // they're one tap away rather than gone.
                 Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    shown.isEmpty
-                        ? '$leftAbbr and $rightAbbr scored exactly the same on every criterion you chose, so there is nothing here to tell them apart. Compare with a different university, or add more criteria to your search.'
-                        : '${_list(hidden.map((s) => widget.labelByCode[s.code] ?? s.code).toList())} '
-                            '${hidden.length == 1 ? 'is' : 'are'} not shown: both universities scored the same there, '
-                            'so ${hidden.length == 1 ? 'it does' : 'they do'} not help you choose between them.',
-                    style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.45),
-                  ),
+                  padding: const EdgeInsets.only(top: 4, bottom: 6),
+                  child: shown.isEmpty
+                      ? Text(
+                          '$leftAbbr and $rightAbbr are identical on every criterion you chose, so there is nothing '
+                          'here to tell them apart. Compare with a different university, or add more criteria to '
+                          'your search.',
+                          style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.45))
+                      : GestureDetector(
+                          onTap: () => setState(() => _showTied = !_showTied),
+                          behavior: HitTestBehavior.opaque,
+                          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Expanded(
+                              child: Text(
+                                '${_list(hidden.map((s) => widget.labelByCode[s.code] ?? s.code).toList())} '
+                                '${hidden.length == 1 ? 'is' : 'are'} not shown — both universities have the same, '
+                                'so ${hidden.length == 1 ? 'it does' : 'they do'} not help you choose. '
+                                '${_showTied ? 'Tap to hide.' : 'Tap to see.'}',
+                                style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.45),
+                              ),
+                            ),
+                            Icon(_showTied ? Icons.expand_less : Icons.expand_more, size: 18, color: C.muted),
+                          ]),
+                        ),
                 ),
+                if (_showTied)
+                  ...hidden.map((s) => _criterionCard(s, leftAbbr, rightAbbr, other!, faded: true)),
+              ],
               if (other == null)
                 const Padding(
                   padding: EdgeInsets.only(top: 20),
@@ -3176,8 +3280,46 @@ class _CampusDistancesCardState extends State<CampusDistancesCard> {
 /// Resolves what to show a student for one criterion code on DetailScreen —
 /// null means "staff never set this," which the caller hides entirely
 /// rather than rendering a placeholder.
+/// How much on-campus accommodation a university actually provides, 0-3.
+///
+/// This began as a yes/no question, which meant one tick outweighed criteria
+/// measured in percentages: after TOPSIS's vector normalisation a 0/1 column
+/// spreads universities 1.000 apart where a percentage column spreads them
+/// ~0.054, roughly eighteen times the influence. It also asked officers
+/// something they read differently -- owning a hostel, versus helping students
+/// find a room, are not the same answer to "available?".
+///
+/// Universities that haven't re-answered still read correctly: the legacy
+/// boolean maps to the ends of the scale. Untouched stays null, and is never
+/// invented as a 0.
+int? accommodationLevel(Map staffAnswers) {
+  final lvl = staffAnswers['accommodationLevel'];
+  if (lvl is num) return lvl.toInt().clamp(0, 3);
+  final legacy = staffAnswers['accommodation'];
+  if (legacy is bool) return legacy ? 3 : 0;
+  return null;
+}
+
+const kAccommodationLabels = ['None', 'Off-campus help', 'Limited on-campus', 'On-campus'];
+
+/// The long forms the staff form offers, so an officer picks what they
+/// actually provide rather than guessing what "available" means.
+const kAccommodationOptions = [
+  'None — students arrange their own housing',
+  'Helps students find off-campus housing',
+  'Limited on-campus places',
+  'Full on-campus accommodation',
+];
+
+String? accommodationText(Map staffAnswers) {
+  final lvl = accommodationLevel(staffAnswers);
+  return lvl == null ? null : kAccommodationLabels[lvl];
+}
+
 dynamic _valueForCode(String code, Map vals, Map staffAnswers, num? kmHome) {
   switch (code) {
+    case 'C08':
+      return accommodationText(staffAnswers);
     case 'C07':
       return kmHome != null ? '${kmHome.toStringAsFixed(2)} km' : null;
     case 'C12':
@@ -4817,7 +4959,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                         final staffAns = staffAnswersById[u['id']] as Map? ?? {};
                         final fee = vals['C01'];
                         final scholarship = vals['C02'];
-                        final accommodation = staffAns['accommodation'];
+                        final accommodation = accommodationText(staffAns);
                         final badge = i == 0 ? 'TOP MATCH' : i == 1 ? '2ND' : i == 2 ? '3RD' : null;
                         final outsideDept = u['outsideDept'] == true;
                         // Server only sets this when the exact-programme #1 was
@@ -4899,7 +5041,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                     if (hasExactProgramme) _chip('Your programme', Icons.check_circle_outline),
                                     if (fee != null) _chip(_fmtRwf(fee as num), Icons.payments_outlined),
                                     if (scholarship != null) _chip('Scholarship ${scholarship is num ? scholarship.toStringAsFixed(1) : scholarship}/5', Icons.school_outlined),
-                                    if (accommodation != null) _chip(accommodation == true ? 'On-campus' : 'Off-campus', Icons.home_outlined),
+                                    if (accommodation != null) _chip(accommodation, Icons.home_outlined),
                                   ]),
                                 ),
                               if (strongestLabel != null || weakLabels.isNotEmpty)
@@ -5199,17 +5341,16 @@ class _DetailScreenState extends State<DetailScreen> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                if (vals['C01'] != null || staffAnswers['accommodation'] != null)
+                if (vals['C01'] != null || accommodationText(staffAnswers) != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 14),
                     child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       if (vals['C01'] != null)
                         _infoCard('TUITION', _fmtRwf(vals['C01'] as num), Icons.payments_outlined),
-                      if (vals['C01'] != null && staffAnswers['accommodation'] != null)
+                      if (vals['C01'] != null && accommodationText(staffAnswers) != null)
                         const SizedBox(width: 10),
-                      if (staffAnswers['accommodation'] != null)
-                        _infoCard('ACCOMMODATION', staffAnswers['accommodation'] == true ? 'On-campus' : 'Off-campus',
-                            Icons.home_outlined),
+                      if (accommodationText(staffAnswers) != null)
+                        _infoCard('ACCOMMODATION', accommodationText(staffAnswers)!, Icons.home_outlined),
                     ]),
                   ),
                 const Text('Campuses in Gasabo', style: TextStyle(fontWeight: FontWeight.w700, color: C.ink)),
@@ -6772,7 +6913,9 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
       } else if (d[flag] == false) d[code] = 0;
       else d.remove(code);
     }
-    boolToNum('accommodation', 'C08');
+    // C08 is a 0-3 scale now, not a tick -- see accommodationLevel().
+    final accom = accommodationLevel(d);
+    if (accom == null) { d.remove('C08'); } else { d['C08'] = accom; }
     boolToNum('library', 'C14');
     boolToNum('sporting', 'C16');
     boolToNum('religiousBased', 'C25');
@@ -6943,7 +7086,19 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
                 _partnerSchoolsField(),
 
                 _section('C08 · On-campus accommodation'),
-                _yesNo('Available?', 'accommodation'),
+                const Text('Pick what you actually provide — more provision scores higher.',
+                    style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                const SizedBox(height: 10),
+                ...List.generate(kAccommodationOptions.length, (i) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _radioTile(kAccommodationOptions[i], accommodationLevel(d) == i,
+                          // Writing the new key clears the legacy yes/no so the
+                          // two can never disagree about the same university.
+                          () => setState(() {
+                                d['accommodationLevel'] = i;
+                                d.remove('accommodation');
+                              })),
+                    )),
 
                 _section('C09 · Transport proximity'),
                 if (_campuses.isEmpty)
