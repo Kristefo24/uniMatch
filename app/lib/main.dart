@@ -18,10 +18,9 @@ import 'csv_download_stub.dart' if (dart.library.html) 'csv_download_web.dart' a
 /// Official application pages per seeded university id.
 const Map<String, String> kApplyUrls = {
   'uni-uok': 'https://www.uok.ac.rw/admissions/',
-  'uni-eau': 'https://eau.ac.rw/apply/',
+  'uni-eau': 'https://mis.eaur.ac.rw/apply.php?bc',
   'uni-alu': 'https://www.alueducation.com/apply/',
   'uni-auca': 'https://auca.ac.rw/apply/',
-  'uni-urcmhs': 'https://apply.ur.ac.rw/',
   'uni-kepler': 'https://www.kepler.org/apply/',
   'uni-ulk': 'https://www.ulk.ac.rw/admission/',
 };
@@ -214,7 +213,7 @@ class C {
   // Distinct brand color per university (matches the prototype crests).
   static const _uniColors = {
     'UoK': Color(0xFF2A5C8F), 'EAU': Color(0xFF8F4B2A), 'ALU': Color(0xFFB48412),
-    'AUCA': Color(0xFF7A2F4A), 'UR/CMHS': Color(0xFF164638), 'Kepler': Color(0xFFB4472A),
+    'AUCA': Color(0xFF7A2F4A), 'Kepler': Color(0xFFB4472A),
     'ULK': Color(0xFF2F4A7A),
   };
   static Color uni(String abbr) => _uniColors[abbr] ?? green;
@@ -842,7 +841,7 @@ Future<void> _editProfile(BuildContext context) async {
                   const SizedBox(height: 10),
                   TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
                   const SizedBox(height: 12),
-                  TextField(controller: contactPhone, decoration: fieldDeco('+250 7xx xxx xxx')),
+                  rwPhoneField(contactPhone),
                   const SizedBox(height: 12),
                   TextField(controller: website, decoration: fieldDeco('www.university.ac.rw')),
                 ],
@@ -850,13 +849,27 @@ Future<void> _editProfile(BuildContext context) async {
             ),
           ),
               primaryButton('Save', () async {
+                // Checked only when a value is present, so a number entered
+                // before these rules existed never blocks an unrelated edit
+                // such as changing a photo.
+                if (Session.role == 'staff' && Session.uniId != null) {
+                  if (contactEmail.text.trim().isNotEmpty && !isValidEmail(contactEmail.text)) {
+                    toast(ctx, 'The contact email does not look right.');
+                    return;
+                  }
+                  if (contactPhone.text.trim().isNotEmpty) {
+                    final err = rwPhoneError(contactPhone.text);
+                    if (err != null) { toast(ctx, 'Contact phone: $err'); return; }
+                  }
+                }
                 setSheet(() => saving = true);
                 try {
                   await Api.updateMe(name: name.text.trim(), track: track, photo: photo);
                   if (Session.role == 'staff' && Session.uniId != null) {
                     await Api.updateUniversityContacts(Session.uniId!,
                         contactEmail: contactEmail.text.trim(),
-                        contactPhone: contactPhone.text.trim(),
+                        contactPhone: contactPhone.text.trim().isEmpty
+                            ? '' : rwPhoneNormalised(contactPhone.text),
                         website: website.text.trim());
                   }
                   Session.name = name.text.trim();
@@ -1066,6 +1079,118 @@ InputDecoration fieldDeco(String hint, {IconData? icon}) => InputDecoration(
           borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: C.border)),
       focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: C.green, width: 1.6)),
+    );
+
+/// ---- input validation -----------------------------------------------------
+///
+/// Mirrors server/validate.js. The server is the real boundary -- these exist
+/// so the graduate sees the problem beside the field instead of as a rejected
+/// request after they've already pressed Save.
+
+// Deliberately not RFC 5322: that accepts addresses no mail server will take,
+// and the point is to stop someone waiting on a verification code that can
+// never arrive. One @, something either side, a dot in the domain.
+final RegExp _kEmailRe = RegExp(r'^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$');
+bool isValidEmail(String s) => _kEmailRe.hasMatch(s.trim());
+
+/// The 9 significant digits of a Rwandan mobile number, however it was
+/// written: 0788888888, 250788888888 and +250 788 888 888 all reduce to
+/// 788888888.
+String rwPhoneDigits(String raw) {
+  var d = raw.replaceAll(RegExp(r'\D'), '');
+  // Stripped whenever present, not only at a particular total length: the
+  // field caps at 9 digits, so someone typing the habitual 078... would
+  // otherwise spend a slot on the 0 and never be able to reach a valid
+  // number. No Rwandan mobile number starts with 0 after the country code.
+  if (d.startsWith('250')) d = d.substring(3);
+  while (d.startsWith('0')) {
+    d = d.substring(1);
+  }
+  return d.length > 9 ? d.substring(0, 9) : d;
+}
+
+/// Null when the number is usable, otherwise the message to show beneath the
+/// field. Rwandan mobiles are 9 digits starting with 7 (72/73/78/79).
+String? rwPhoneError(String raw) {
+  final d = rwPhoneDigits(raw);
+  if (d.isEmpty) return 'Phone number is required';
+  if (d.length != 9) return 'Enter 9 digits after +250, e.g. 788 888 888';
+  if (!d.startsWith('7')) return 'Rwandan mobile numbers start with 7';
+  return null;
+}
+
+String rwPhoneGrouped(String raw) {
+  final d = rwPhoneDigits(raw);
+  final parts = <String>[];
+  for (var i = 0; i < d.length; i += 3) {
+    parts.add(d.substring(i, math.min(i + 3, d.length)));
+  }
+  return parts.join(' ');
+}
+
+/// One canonical form for storage, so the contact shown to graduates is always
+/// dialable regardless of how staff typed it.
+String rwPhoneNormalised(String raw) => '+250${rwPhoneDigits(raw)}';
+
+/// Keeps a phone field to 9 digits, grouped 3-3-3 as the user types, and
+/// preserves the caret's position relative to the digits rather than jumping
+/// it to the end on every keystroke.
+class _RwPhoneFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    final digitsBeforeCaret = newValue.text
+        .substring(0, newValue.selection.baseOffset.clamp(0, newValue.text.length))
+        .replaceAll(RegExp(r'\D'), '')
+        .length;
+    final formatted = rwPhoneGrouped(newValue.text);
+    // Walk the formatted string until we've passed the same number of digits.
+    var caret = formatted.length, seen = 0;
+    for (var i = 0; i < formatted.length; i++) {
+      if (seen == digitsBeforeCaret) { caret = i; break; }
+      if (formatted[i] != ' ') seen++;
+    }
+    if (seen < digitsBeforeCaret) caret = formatted.length;
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: caret.clamp(0, formatted.length)),
+    );
+  }
+}
+
+/// A phone input with a fixed, un-typeable +250 so the country code can never
+/// be omitted or mistyped.
+///
+/// The TextField itself is deliberately constant: only the error line below it
+/// listens to the controller. Rebuilding the whole surrounding form on every
+/// keystroke -- which is what an `onChanged` + `setState` would do -- tears
+/// down and recreates Flutter web's hidden input, and keystrokes are silently
+/// dropped mid-number.
+Widget rwPhoneField(TextEditingController c) => Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: c,
+          keyboardType: TextInputType.phone,
+          inputFormatters: [_RwPhoneFormatter()],
+          decoration: fieldDeco('788 888 888').copyWith(
+            prefixText: '+250 ',
+            prefixStyle: const TextStyle(color: C.ink, fontWeight: FontWeight.w600, fontSize: 15),
+          ),
+        ),
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: c,
+          builder: (_, value, _) {
+            // Silent until they've started typing -- an error on an untouched
+            // field reads as a telling-off rather than a hint.
+            final err = value.text.isEmpty ? null : rwPhoneError(value.text);
+            if (err == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 6, left: 4),
+              child: Text(err, style: const TextStyle(color: Color(0xFFC25A1F), fontSize: 11.5)),
+            );
+          },
+        ),
+      ],
     );
 
 void toast(BuildContext ctx, String msg) =>
@@ -1561,9 +1686,21 @@ class _SignupScreenState extends State<SignupScreen> {
       toast(context, 'Please choose your A2 combination.');
       return;
     }
-    if (role == 'staff' && (contactEmail.text.trim().isEmpty || contactPhone.text.trim().isEmpty)) {
-      toast(context, 'Please enter the university\'s contact email and phone.');
+    if (!isValidEmail(email.text)) {
+      toast(context, 'That email address does not look right — check it and try again.');
       return;
+    }
+    if (role == 'staff') {
+      if (contactEmail.text.trim().isEmpty || contactPhone.text.trim().isEmpty) {
+        toast(context, 'Please enter the university\'s contact email and phone.');
+        return;
+      }
+      if (!isValidEmail(contactEmail.text)) {
+        toast(context, 'The university contact email does not look right.');
+        return;
+      }
+      final phoneErr = rwPhoneError(contactPhone.text);
+      if (phoneErr != null) { toast(context, 'Contact phone: $phoneErr'); return; }
     }
     if (pass.text.length < 8) {
       toast(context, 'Password must be at least 8 characters.');
@@ -1575,7 +1712,7 @@ class _SignupScreenState extends State<SignupScreen> {
           track: role == 'student' ? track : null,
           universityId: role == 'staff' ? uniId : null,
           contactEmail: role == 'staff' ? contactEmail.text.trim() : null,
-          contactPhone: role == 'staff' ? contactPhone.text.trim() : null);
+          contactPhone: role == 'staff' ? rwPhoneNormalised(contactPhone.text) : null);
       if (!mounted) return;
       if (role == 'staff') {
         toast(context, 'Staff account created — an admin must confirm it before you can log in.');
@@ -1724,7 +1861,7 @@ class _SignupScreenState extends State<SignupScreen> {
                 TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
                 const SizedBox(height: 16),
                 _label('UNIVERSITY CONTACT PHONE'),
-                TextField(controller: contactPhone, decoration: fieldDeco('+250 7xx xxx xxx')),
+                rwPhoneField(contactPhone),
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
                   child: Text('Shown to graduates as the way to reach your university — editable later from Criteria answers.',
@@ -8260,9 +8397,6 @@ class _PiePainter extends CustomPainter {
       any = true;
       canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true,
           Paint()..color = (u['color'] as Color)..style = PaintingStyle.fill);
-      // A hairline between slices so two similar colours never read as one.
-      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true,
-          Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 1.5);
       // Only label a slice with room to hold one legibly; the rest are in the
       // legend beside the chart.
       if (pct >= 7) {
@@ -8624,6 +8758,10 @@ class _AdminUniversitiesScreenState extends State<AdminUniversitiesScreen> {
     );
     if (saved != true) return;
     try {
+      if (abbr.text.trim().isEmpty || name.text.trim().isEmpty) {
+        if (mounted) toast(context, 'Abbreviation and full name are both required.');
+        return;
+      }
       if (existing == null) {
         await Api.addUniversity(abbr.text.trim(), name.text.trim(), sector.text.trim());
       } else {

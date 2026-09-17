@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 
 const db = require('./db');
 const { topsis, haversineKm } = require('./topsis');
+const v = require('./validate');
 const mailer = require('./mailer');
 const ExcelJS = require('exceljs');
 const crypto = require('crypto');
@@ -85,13 +86,18 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch(e => {
 
 // ---- auth -----------------------------------------------------------------
 app.post('/signup', wrap(async (req, res) => {
-  const { name, email, password, role, universityId, track, contactEmail, contactPhone } = req.body || {};
-  if (!name || !email || !password) throw new Error('Name, email and password are required');
+  const { password, role, universityId, track } = req.body || {};
+  const name = v.required((req.body || {}).name, 'Name', v.MAX.name);
+  const email = v.email((req.body || {}).email);
+  if (!password) throw new Error('Name, email and password are required');
   if (password.length < 8) throw new Error('Password must be at least 8 characters');
   // Staff signup also registers the university's public contact info —
-  // required so every university has it from day one.
-  if ((role || 'student') === 'staff' && (!contactEmail || !contactPhone)) {
-    throw new Error('University contact email and phone are required');
+  // required so every university has it from day one, and validated here so a
+  // mistyped number can't become the only way graduates have to reach them.
+  let contactEmail = null, contactPhone = null;
+  if ((role || 'student') === 'staff') {
+    contactEmail = v.email((req.body || {}).contactEmail, 'University contact email');
+    contactPhone = v.phone((req.body || {}).contactPhone, 'University contact phone');
   }
   const hashed = await bcrypt.hash(password, 10);
   // Staff: unchanged — account created immediately, gated by admin
@@ -120,8 +126,9 @@ app.post('/signup', wrap(async (req, res) => {
 }));
 
 app.post('/verify-signup', wrap(async (req, res) => {
-  const { email, otp } = req.body || {};
-  if (!email || !otp) throw new Error('Email and code are required');
+  const { otp } = req.body || {};
+  const email = v.email((req.body || {}).email);
+  if (!otp) throw new Error('Email and code are required');
   const pending = await db.getPendingSignup(email);
   // Same message as a wrong code, so this can't be used to probe which
   // addresses have a signup in flight.
@@ -432,7 +439,13 @@ app.delete('/shortlist/:universityId', auth(), wrap(async (req, res) => {
   res.json(await db.removeShortlist(req.user?.id, req.params.universityId));
 }));
 app.post('/rate', auth(), wrap(async (req, res) => {
-  res.json(await db.recordRating({ userId: req.user?.id, universityId: req.body.universityId, stars: req.body.stars }));
+  // The app only ever sends 1-5, but the server is the boundary: an unchecked
+  // value here would skew a university's average rating permanently.
+  res.json(await db.recordRating({
+    userId: req.user?.id,
+    universityId: v.required(req.body.universityId, 'University'),
+    stars: v.intInRange(req.body.stars, 'Rating', 1, 5),
+  }));
 }));
 app.get('/rate/:universityId', auth(), wrap(async (req, res) => {
   res.json(await db.myRating({ userId: req.user.id, universityId: req.params.universityId }));
@@ -550,8 +563,14 @@ app.put('/staff/:uniId/photo', auth(), requireStaffOfUniversity(), wrap(async (r
 // fields -- saveStaffCriteria deliberately can't touch them (see the drivers),
 // so a stale criteria screen can never wipe or revert what's set here.
 app.put('/staff/:uniId/contacts', auth(), requireStaffOfUniversity(), wrap(async (req, res) => {
-  const { contactEmail, contactPhone, website } = req.body || {};
-  res.json(await db.setUniversityContacts(req.params.uniId, { contactEmail, contactPhone, website }));
+  const body = req.body || {};
+  // Validated only when a value is actually supplied: a staff member editing
+  // their photo shouldn't be blocked by a number entered before these rules.
+  res.json(await db.setUniversityContacts(req.params.uniId, {
+    contactEmail: v.str(body.contactEmail) ? v.email(body.contactEmail, 'Contact email') : null,
+    contactPhone: v.str(body.contactPhone) ? v.phone(body.contactPhone, 'Contact phone') : null,
+    website: v.website(body.website),
+  }));
 }));
 app.get('/admin/report', auth(), requireRole('admin'), wrap(async (_req, res) => {
   res.json(await db.adminReport());
@@ -712,11 +731,19 @@ app.get('/admin/universities', auth(), requireRole('admin'), wrap(async (_req, r
   const list = await db.listUniversities();
   res.json(list.map(u => ({ id: u.id, abbr: u.abbr, name: u.name, photo: u.photo || null, sector: u.sector || (u.campuses && u.campuses[0] ? u.campuses[0].name : '') })));
 }));
+// A blank name or abbreviation would show as an empty row in every list,
+// dropdown and report, and C.uni('') falls back to the default green -- so it
+// isn't even visually distinct. Rejected at the door instead.
+const uniFields = (body) => ({
+  abbr: v.required(body.abbr, 'Abbreviation', v.MAX.abbr),
+  name: v.required(body.name, 'Full name', v.MAX.uniName),
+  sector: v.optional(body.sector, 'Main campus / location', v.MAX.sector),
+});
 app.post('/admin/universities', auth(), requireRole('admin'), wrap(async (req, res) => {
-  res.json(await db.addUniversity(req.body || {}));
+  res.json(await db.addUniversity({ ...(req.body || {}), ...uniFields(req.body || {}) }));
 }));
 app.put('/admin/universities/:id', auth(), requireRole('admin'), wrap(async (req, res) => {
-  res.json(await db.updateUniversity(req.params.id, req.body || {}));
+  res.json(await db.updateUniversity(req.params.id, { ...(req.body || {}), ...uniFields(req.body || {}) }));
 }));
 app.delete('/admin/universities/:id', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.deleteUniversity(req.params.id));
@@ -726,11 +753,18 @@ app.delete('/admin/universities/:id', auth(), requireRole('admin'), wrap(async (
 app.get('/admin/criteria', auth(), requireRole('admin'), wrap(async (_req, res) => {
   res.json(await db.listCriteria());
 }));
+// `direction` decides whether more is better or worse for a criterion, so a
+// typo silently inverts how every university scores on it.
+const criterionFields = (body) => ({
+  label: v.required(body.label, 'Label', v.MAX.label),
+  category: v.optional(body.category, 'Category', v.MAX.label) || 'General',
+  direction: v.oneOf(body.direction || 'benefit', 'Direction', ['benefit', 'cost']),
+});
 app.post('/admin/criteria', auth(), requireRole('admin'), wrap(async (req, res) => {
-  res.json(await db.addCriterion(req.body || {}));
+  res.json(await db.addCriterion(criterionFields(req.body || {})));
 }));
 app.put('/admin/criteria/:code', auth(), requireRole('admin'), wrap(async (req, res) => {
-  res.json(await db.updateCriterion(req.params.code, req.body || {}));
+  res.json(await db.updateCriterion(req.params.code, criterionFields(req.body || {})));
 }));
 app.delete('/admin/criteria/:code', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.deleteCriterion(req.params.code));

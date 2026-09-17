@@ -40,7 +40,6 @@ const UNIVERSITIES = [
   { id:'uni-eau', abbr:'EAU', name:'East African University', campuses:[], programmes:[], vals:{} },
   { id:'uni-alu', abbr:'ALU', name:'African Leadership University', campuses:[], programmes:[], vals:{} },
   { id:'uni-auca', abbr:'AUCA', name:'Adventist University of Central Africa', campuses:[], programmes:[], vals:{} },
-  { id:'uni-urcmhs', abbr:'UR/CMHS', name:'UR College of Medicine & Health Sciences', campuses:[], programmes:[], vals:{} },
   { id:'uni-ulk', abbr:'ULK', name:'Kigali Independent University', campuses:[], programmes:[], vals:{} },
   { id:'uni-kepler', abbr:'Kepler', name:'Kepler College', campuses:[], programmes:[], vals:{} },
 ];
