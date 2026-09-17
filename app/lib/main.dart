@@ -8107,80 +8107,68 @@ class _UniversityPopularityChartState extends State<_UniversityPopularityChart> 
     }).catchError((_) { if (mounted) setState(() => loading = false); });
   }
 
-  /// Graduates who have actually generated a ranking -- the denominator for
-  /// every percentage here. `totalStudents` is everyone registered, shown for
-  /// context but never divided by: the graduates who have not used the feature
-  /// dilute all six universities identically and tell an admin nothing.
-  int get _ranked => (data?['rankedStudents'] as num?)?.toInt() ?? 0;
   int get _total => (data?['totalStudents'] as num?)?.toInt() ?? 0;
+  int get _applied => (data?['appliedStudents'] as num?)?.toInt() ?? 0;
+  int get _notYet => _total - _applied;
 
-  /// One university: colour chip, abbreviation, a bar scaled against the
-  /// most-listed university, then the raw count and its percentage. Scaling to
-  /// the leader rather than to 100 keeps the differences visible when every
-  /// university sits in a narrow band.
-  Widget _bar(Map u) {
-    final unis = List<Map>.from(data!['universities'] as List);
-    final maxCount = unis.fold<int>(1, (m, x) => math.max(m, (x['count'] as num).toInt()));
-    final count = (u['count'] as num).toInt();
-    final pct = (u['pct'] as num).toDouble();
-    final color = C.uni('${u['abbr']}');
-    return GestureDetector(
-      onTap: () => _showDetail(u),
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Row(children: [
-          Container(width: 10, height: 10,
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 52,
-            child: Text('${u['abbr']}',
-                style: const TextStyle(fontSize: 11.5, color: C.ink, fontWeight: FontWeight.w700),
-                overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                value: count / maxCount,
-                minHeight: 9,
-                backgroundColor: C.sand,
-                valueColor: AlwaysStoppedAnimation<Color>(color),
-              ),
-            ),
-          ),
-          SizedBox(
-            width: 86,
-            child: Text('$count  ·  ${pct.toStringAsFixed(0)}%',
-                textAlign: TextAlign.right,
-                style: const TextStyle(fontSize: 11.5, color: C.ink, fontWeight: FontWeight.w600)),
-          ),
-        ]),
-      ),
-    );
+  /// The six universities plus a final "not applied yet" slice, so the parts
+  /// total the whole graduate body rather than quietly falling short of it.
+  List<Map> get _slices {
+    final unis = List<Map>.from((data?['universities'] as List?) ?? const [])
+        .map((u) => {...u, 'color': C.uni('${u['abbr']}')})
+        .toList();
+    if (_notYet > 0) {
+      unis.add({
+        'abbr': 'Not applied yet', 'name': 'Not applied yet', 'count': _notYet,
+        'pct': _total > 0 ? _notYet / _total * 100 : 0.0,
+        'color': const Color(0xFFD5D0C4), 'placeholder': true,
+      });
+    }
+    return unis;
   }
 
   void _showDetail(Map u) {
+    final count = (u['count'] as num).toInt();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(mainAxisSize: MainAxisSize.min, children: [
           Container(width: 14, height: 14,
-              decoration: BoxDecoration(color: C.uni('${u['abbr']}'), shape: BoxShape.circle)),
+              decoration: BoxDecoration(color: u['color'] as Color, shape: BoxShape.circle)),
           const SizedBox(width: 8),
-          Text('${u['abbr']}: ${(u['pct'] as num).toStringAsFixed(0)}%',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          Flexible(
+            child: Text('${u['abbr']}: ${(u['pct'] as num).toStringAsFixed(1)}%',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          ),
         ]),
         content: Text(
-            '${u['name']}\n\n${u['count']} of the $_ranked graduate${_ranked == 1 ? '' : 's'} who have generated a '
-            'ranking had this university in their latest list.\n\n'
-            '$_total graduates are registered in total; ${_total - _ranked} have not ranked yet.',
-            style: const TextStyle(color: C.muted, fontSize: 12.5, height: 1.4)),
+          u['placeholder'] == true
+              ? '$count of the $_total registered A2 graduates have not applied anywhere yet.'
+              : '${u['name']}\n\n$count of the $_total registered A2 graduates applied here.\n\n'
+                'Each graduate applies to one university, so every slice counts a different person.',
+          style: const TextStyle(color: C.muted, fontSize: 12.5, height: 1.4),
+        ),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
       ),
     );
+  }
+
+  /// Which slice a tap landed on, walking the same cumulative sweep the
+  /// painter uses so the hit areas can never drift from what is drawn.
+  void _tap(Offset local, double size) {
+    final center = Offset(size / 2, size / 2);
+    final dx = local.dx - center.dx, dy = local.dy - center.dy;
+    if (math.sqrt(dx * dx + dy * dy) > size / 2) return;
+    var angle = math.atan2(dy, dx) + math.pi / 2;
+    if (angle < 0) angle += 2 * math.pi;
+    double cum = 0;
+    for (final u in _slices) {
+      final sweep = (u['pct'] as num).toDouble() / 100 * 2 * math.pi;
+      if (sweep <= 0) continue;
+      if (angle >= cum && angle < cum + sweep) { _showDetail(u); return; }
+      cum += sweep;
+    }
   }
 
   @override
@@ -8190,30 +8178,115 @@ class _UniversityPopularityChartState extends State<_UniversityPopularityChart> 
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.border)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('UNIVERSITY POPULARITY', style: TextStyle(
+        const Text('WHERE GRADUATES APPLIED', style: TextStyle(
             fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: C.muted)),
         const SizedBox(height: 4),
         Text(
             loading || data == null
-                ? 'How many graduates had each university in their latest ranked list.'
-                : 'Of the $_ranked graduates who have generated a ranking, how many had each '
-                  'university in their latest list. $_total registered in total.',
+                ? 'Which university each A2 graduate applied to.'
+                : 'Each graduate applies to one university. $_applied of $_total have applied so far.',
             style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
         const SizedBox(height: 14),
         if (loading)
           const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: C.green)))
         else if (data == null)
-          const Text('Could not load popularity data.', style: TextStyle(color: C.muted, fontSize: 12))
-        else if (_ranked == 0)
+          const Text('Could not load application data.', style: TextStyle(color: C.muted, fontSize: 12))
+        else if (_total == 0)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
-            child: Text('No A2 graduates have ranked universities yet.', style: TextStyle(color: C.muted, fontSize: 12)),
+            child: Text('No A2 graduates are registered yet.', style: TextStyle(color: C.muted, fontSize: 12)),
           )
         else
-          ...List<Map>.from(data!['universities'] as List).map(_bar),
+          LayoutBuilder(builder: (ctx, c) {
+            final size = math.min(170.0, c.maxWidth * 0.46);
+            return Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+              GestureDetector(
+                onTapUp: (d) => _tap(d.localPosition, size),
+                child: CustomPaint(size: Size(size, size), painter: _PiePainter(_slices)),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _slices.map((u) => GestureDetector(
+                    onTap: () => _showDetail(u),
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 7),
+                      child: Row(children: [
+                        Container(width: 10, height: 10,
+                            decoration: BoxDecoration(color: u['color'] as Color, shape: BoxShape.circle)),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text('${u['abbr']}',
+                              style: TextStyle(fontSize: 11.5, height: 1.2,
+                                  color: u['placeholder'] == true ? C.muted : C.ink,
+                                  fontWeight: FontWeight.w600),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        Text('${u['count']} · ${(u['pct'] as num).toStringAsFixed(1)}%',
+                            style: const TextStyle(fontSize: 11.5, color: C.muted, fontWeight: FontWeight.w600)),
+                      ]),
+                    ),
+                  )).toList(),
+                ),
+              ),
+            ]);
+          }),
       ]),
     );
   }
+}
+
+/// Draws slices that genuinely partition a whole. Each entry supplies its own
+/// `color` and a `pct`, and the caller is responsible for those summing to
+/// 100 -- a pie whose parts overlap is a lie, however pretty.
+class _PiePainter extends CustomPainter {
+  final List<Map> slices;
+  _PiePainter(this.slices);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = math.min(size.width, size.height) / 2;
+    double startAngle = -math.pi / 2;
+    bool any = false;
+    for (final u in slices) {
+      final pct = (u['pct'] as num).toDouble();
+      final sweep = pct / 100 * 2 * math.pi;
+      if (sweep <= 0) continue;
+      any = true;
+      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true,
+          Paint()..color = (u['color'] as Color)..style = PaintingStyle.fill);
+      // A hairline between slices so two similar colours never read as one.
+      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true,
+          Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 1.5);
+      // Only label a slice with room to hold one legibly; the rest are in the
+      // legend beside the chart.
+      if (pct >= 7) {
+        final mid = startAngle + sweep / 2;
+        final at = center + Offset(math.cos(mid), math.sin(mid)) * (radius * 0.62);
+        final tp = TextPainter(
+          text: TextSpan(text: '${pct.toStringAsFixed(0)}%',
+              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700)),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromCenter(center: at, width: tp.width + 12, height: tp.height + 6),
+              const Radius.circular(5)),
+          Paint()..color = Colors.black.withValues(alpha: 0.5),
+        );
+        tp.paint(canvas, at - Offset(tp.width / 2, tp.height / 2));
+      }
+      startAngle += sweep;
+    }
+    if (!any) {
+      canvas.drawCircle(center, radius, Paint()..color = C.sand..style = PaintingStyle.fill);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PiePainter oldDelegate) => oldDelegate.slices != slices;
 }
 
 /// Staff-facing counterpart to `_UniversityPopularityChart` -- instead of

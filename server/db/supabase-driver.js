@@ -901,33 +901,29 @@ module.exports = {
     try { criteria = JSON.parse(rows[0].criteria) || []; } catch { /* ignore malformed row */ }
     return { ranked, criteria, updatedAt: rows[0].updated_at };
   },
+  // Where graduates actually applied. Unlike "appeared in someone's ranked
+  // list", an application is exactly one per graduate -- verified in
+  // production: 71 applications across 71 distinct applicants, none twice --
+  // so these counts genuinely partition the graduate body and can be drawn as
+  // a pie. The denominator is every registered graduate, and the graduates who
+  // have not applied yet are returned as their own slice so the parts total
+  // 100% instead of quietly falling short.
   async universityPopularity() {
-    const { rows } = await q('SELECT university_ids FROM user_last_ranking');
-    const counts = {};
-    let rankedStudents = 0;
-    for (const row of rows) {
-      let ranked = [];
-      try { ranked = JSON.parse(row.university_ids) || []; } catch { /* ignore malformed row */ }
-      if (!ranked.length) continue;
-      rankedStudents++;
-      for (const u of ranked) counts[u.id] = (counts[u.id] || 0) + 1;
-    }
-    // Two denominators, because they answer different questions and mixing
-    // them produced a pie whose slices summed to 216%. A graduate's list holds
-    // several universities at once, so these counts OVERLAP -- they are not
-    // shares of one whole, and the dashboard renders them as bars, not a pie.
-    // `pct` is measured against the graduates who have actually generated a
-    // ranking: the rest simply haven't used the feature, and counting them
-    // dilutes every university by the same meaningless factor.
+    const { rows: apps } = await q(
+      'SELECT university_id, COUNT(DISTINCT user_id)::int AS n FROM applications ' +
+      'WHERE user_id IS NOT NULL GROUP BY university_id');
+    const counts = Object.fromEntries(apps.map(r => [r.university_id, Number(r.n)]));
+    const { rows: ap } = await q('SELECT COUNT(DISTINCT user_id)::int AS n FROM applications WHERE user_id IS NOT NULL');
+    const appliedStudents = Number(ap[0].n) || 0;
     const totalStudents = (await this.listStudents()).length;
     const unis = await this.listUniversities();
     return {
       totalStudents,
-      rankedStudents,
+      appliedStudents,
       universities: unis.map(u => ({
         id: u.id, abbr: u.abbr, name: u.name,
         count: counts[u.id] || 0,
-        pct: rankedStudents ? Number(((counts[u.id] || 0) / rankedStudents * 100).toFixed(1)) : 0,
+        pct: totalStudents ? Number(((counts[u.id] || 0) / totalStudents * 100).toFixed(1)) : 0,
       })).sort((a, b) => b.count - a.count),
     };
   },
