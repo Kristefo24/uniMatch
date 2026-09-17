@@ -564,20 +564,30 @@ module.exports = {
   async universityPopularity() {
     const rows = Object.values(db.userLastRanking || {});
     const counts = {};
+    let rankedStudents = 0;
     for (const row of rows) {
-      for (const u of row.ranked || []) counts[u.id] = (counts[u.id] || 0) + 1;
+      const ranked = row.ranked || [];
+      if (!ranked.length) continue;
+      rankedStudents++;
+      for (const u of ranked) counts[u.id] = (counts[u.id] || 0) + 1;
     }
-    // Denominator is every registered A2 graduate, not just those who've
-    // ranked at least once — e.g. "22% of all 30 graduate accounts".
+    // Two denominators, because they answer different questions and mixing
+    // them produced a pie whose slices summed to 216%. A graduate's list holds
+    // several universities at once, so these counts OVERLAP -- they are not
+    // shares of one whole, and the dashboard renders them as bars, not a pie.
+    // `pct` is measured against the graduates who have actually generated a
+    // ranking: the rest simply haven't used the feature, and counting them
+    // dilutes every university by the same meaningless factor.
     const totalStudents = (await this.listStudents()).length;
     const unis = await this.listUniversities();
     return {
       totalStudents,
+      rankedStudents,
       universities: unis.map(u => ({
         id: u.id, abbr: u.abbr, name: u.name,
         count: counts[u.id] || 0,
-        pct: totalStudents ? Number(((counts[u.id] || 0) / totalStudents * 100).toFixed(1)) : 0,
-      })),
+        pct: rankedStudents ? Number(((counts[u.id] || 0) / rankedStudents * 100).toFixed(1)) : 0,
+      })).sort((a, b) => b.count - a.count),
     };
   },
 
@@ -639,8 +649,22 @@ module.exports = {
     if (photo !== undefined) u.photo = photo;
     save(); return u;
   },
+  // See supabase-driver.deleteUniversity: programmes and staff answers left
+  // behind outlive the university and keep showing up in pickers and reports.
   async deleteUniversity(id) {
-    db.universities = db.universities.filter(u => u.id !== id); save(); return { ok: true };
+    db.universities = db.universities.filter(u => u.id !== id);
+    db.programmes = (db.programmes || []).filter(p => p.universityId !== id);
+    db.applications = (db.applications || []).filter(a => a.universityId !== id);
+    db.shortlists = (db.shortlists || []).filter(s => s.universityId !== id);
+    db.ratings = (db.ratings || []).filter(r => r.universityId !== id);
+    db.campuses = (db.campuses || []).filter(c => c.universityId !== id);
+    db.criteriaValues = (db.criteriaValues || []).filter(c => c.universityId !== id);
+    if (db.staffData) delete db.staffData[id];
+    for (const row of Object.values(db.userLastRanking || {})) {
+      if (Array.isArray(row.ranked)) row.ranked = row.ranked.filter(u => u && u.id !== id);
+    }
+    save();
+    return { ok: true };
   },
 
   // ---- admin: criteria CRUD ----

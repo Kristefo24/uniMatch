@@ -444,11 +444,49 @@ module.exports = {
     }
     return { id, abbr, name, sector, photo };
   },
+  // Everything belonging to the university goes with it. Leaving programmes
+  // or staff answers behind puts a programme nobody can apply to in the
+  // graduate's picker and keeps dead rows in every report -- which is exactly
+  // what four deleted test universities did in production.
   async deleteUniversity(id) {
-    await q('DELETE FROM universities WHERE id=$1', [id]);
-    await q('DELETE FROM campuses WHERE university_id=$1', [id]);
-    await q('DELETE FROM criteria_values WHERE university_id=$1', [id]);
+    const pool = await getClient();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: camps } = await client.query('SELECT id FROM campuses WHERE university_id=$1', [id]);
+      for (const c of camps) await client.query('DELETE FROM campus_departments WHERE campus_id=$1', [c.id]);
+      for (const t of ['applications', 'shortlists', 'ratings', 'programmes',
+                       'campuses', 'criteria_values', 'staff_data']) {
+        await client.query(`DELETE FROM ${t} WHERE university_id=$1`, [id]);
+      }
+      await client.query('DELETE FROM universities WHERE id=$1', [id]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+    // Saved ranking snapshots embed whole university objects, so a deleted
+    // one would keep surfacing in "My rankings" and in the popularity counts.
+    await this.stripUniversityFromRankings(id);
     return { ok: true };
+  },
+
+  // Drops a university from every stored top-5 snapshot. A student's list may
+  // become shorter, which is honest -- better than naming an institution that
+  // no longer exists.
+  async stripUniversityFromRankings(id) {
+    const { rows } = await q('SELECT user_id, university_ids FROM user_last_ranking');
+    for (const row of rows) {
+      let arr;
+      try { arr = JSON.parse(row.university_ids) || []; } catch { continue; }
+      const kept = arr.filter(u => u && u.id !== id);
+      if (kept.length !== arr.length) {
+        await q('UPDATE user_last_ranking SET university_ids=$1 WHERE user_id=$2',
+          [JSON.stringify(kept), row.user_id]);
+      }
+    }
   },
 
   // ---- admin: criteria CRUD ----
@@ -866,22 +904,31 @@ module.exports = {
   async universityPopularity() {
     const { rows } = await q('SELECT university_ids FROM user_last_ranking');
     const counts = {};
+    let rankedStudents = 0;
     for (const row of rows) {
       let ranked = [];
       try { ranked = JSON.parse(row.university_ids) || []; } catch { /* ignore malformed row */ }
+      if (!ranked.length) continue;
+      rankedStudents++;
       for (const u of ranked) counts[u.id] = (counts[u.id] || 0) + 1;
     }
-    // Denominator is every registered A2 graduate, not just those who've
-    // ranked at least once — e.g. "22% of all 30 graduate accounts".
+    // Two denominators, because they answer different questions and mixing
+    // them produced a pie whose slices summed to 216%. A graduate's list holds
+    // several universities at once, so these counts OVERLAP -- they are not
+    // shares of one whole, and the dashboard renders them as bars, not a pie.
+    // `pct` is measured against the graduates who have actually generated a
+    // ranking: the rest simply haven't used the feature, and counting them
+    // dilutes every university by the same meaningless factor.
     const totalStudents = (await this.listStudents()).length;
     const unis = await this.listUniversities();
     return {
       totalStudents,
+      rankedStudents,
       universities: unis.map(u => ({
         id: u.id, abbr: u.abbr, name: u.name,
         count: counts[u.id] || 0,
-        pct: totalStudents ? Number(((counts[u.id] || 0) / totalStudents * 100).toFixed(1)) : 0,
-      })),
+        pct: rankedStudents ? Number(((counts[u.id] || 0) / rankedStudents * 100).toFixed(1)) : 0,
+      })).sort((a, b) => b.count - a.count),
     };
   },
 

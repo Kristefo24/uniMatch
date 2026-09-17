@@ -441,12 +441,43 @@ module.exports = {
     }
     return { id, abbr, name, sector, photo };
   },
+  // See supabase-driver.deleteUniversity: programmes and staff answers left
+  // behind outlive the university and keep showing up in pickers and reports.
   async deleteUniversity(id) {
     const p = await getPool();
-    await p.query('DELETE FROM universities WHERE id=?', [id]);
-    await p.query('DELETE FROM campuses WHERE university_id=?', [id]);
-    await p.query('DELETE FROM criteria_values WHERE university_id=?', [id]);
+    const conn = await p.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [camps] = await conn.query('SELECT id FROM campuses WHERE university_id=?', [id]);
+      for (const c of camps) await conn.query('DELETE FROM campus_departments WHERE campus_id=?', [c.id]);
+      for (const t of ['applications', 'shortlists', 'ratings', 'programmes',
+                       'campuses', 'criteria_values', 'staff_data']) {
+        await conn.query(`DELETE FROM ${t} WHERE university_id=?`, [id]);
+      }
+      await conn.query('DELETE FROM universities WHERE id=?', [id]);
+      await conn.commit();
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
+    await this.stripUniversityFromRankings(id);
     return { ok: true };
+  },
+
+  async stripUniversityFromRankings(id) {
+    const p = await getPool();
+    const [rows] = await p.query('SELECT user_id, university_ids FROM user_last_ranking');
+    for (const row of rows) {
+      let arr;
+      try { arr = JSON.parse(row.university_ids) || []; } catch { continue; }
+      const kept = arr.filter(u => u && u.id !== id);
+      if (kept.length !== arr.length) {
+        await p.query('UPDATE user_last_ranking SET university_ids=? WHERE user_id=?',
+          [JSON.stringify(kept), row.user_id]);
+      }
+    }
   },
 
   // ---- admin: criteria CRUD ----
@@ -897,22 +928,31 @@ module.exports = {
     const p = await getPool();
     const [rows] = await p.query('SELECT university_ids FROM user_last_ranking');
     const counts = {};
+    let rankedStudents = 0;
     for (const row of rows) {
       let ranked = [];
       try { ranked = JSON.parse(row.university_ids) || []; } catch { /* ignore malformed row */ }
+      if (!ranked.length) continue;
+      rankedStudents++;
       for (const u of ranked) counts[u.id] = (counts[u.id] || 0) + 1;
     }
-    // Denominator is every registered A2 graduate, not just those who've
-    // ranked at least once — e.g. "22% of all 30 graduate accounts".
+    // Two denominators, because they answer different questions and mixing
+    // them produced a pie whose slices summed to 216%. A graduate's list holds
+    // several universities at once, so these counts OVERLAP -- they are not
+    // shares of one whole, and the dashboard renders them as bars, not a pie.
+    // `pct` is measured against the graduates who have actually generated a
+    // ranking: the rest simply haven't used the feature, and counting them
+    // dilutes every university by the same meaningless factor.
     const totalStudents = (await this.listStudents()).length;
     const unis = await this.listUniversities();
     return {
       totalStudents,
+      rankedStudents,
       universities: unis.map(u => ({
         id: u.id, abbr: u.abbr, name: u.name,
         count: counts[u.id] || 0,
-        pct: totalStudents ? Number(((counts[u.id] || 0) / totalStudents * 100).toFixed(1)) : 0,
-      })),
+        pct: rankedStudents ? Number(((counts[u.id] || 0) / rankedStudents * 100).toFixed(1)) : 0,
+      })).sort((a, b) => b.count - a.count),
     };
   },
 

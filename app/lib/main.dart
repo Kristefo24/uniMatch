@@ -8078,10 +8078,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
       );
 }
 
-/// Pie chart of what share of A2 graduates' most recent ranked list included
-/// each university — colors reuse C.uni(abbr) so they match every other
-/// university reference in the app. Tap a slice or a legend entry for a
-/// small "ABBR: NN%" detail popup (no hover — this app also targets touch).
+/// How many A2 graduates had each university in their most recent ranked list.
+///
+/// Deliberately bars, not a pie. A graduate's list holds several universities
+/// at once -- 3.2 on average on the live data -- so the universities OVERLAP
+/// and their shares sum well past 100% (216% in production), which a pie drew
+/// as slices wrapping past a full circle and painting over each other. Bars
+/// carry the same numbers honestly: each is read on its own against the same
+/// denominator, and nothing pretends to be a share of one whole.
+///
+/// Colors reuse C.uni(abbr) so they match every other university reference in
+/// the app. Tap a row for the detail popup (no hover -- this app targets touch).
 class _UniversityPopularityChart extends StatefulWidget {
   const _UniversityPopularityChart();
   @override
@@ -8100,6 +8107,60 @@ class _UniversityPopularityChartState extends State<_UniversityPopularityChart> 
     }).catchError((_) { if (mounted) setState(() => loading = false); });
   }
 
+  /// Graduates who have actually generated a ranking -- the denominator for
+  /// every percentage here. `totalStudents` is everyone registered, shown for
+  /// context but never divided by: the graduates who have not used the feature
+  /// dilute all six universities identically and tell an admin nothing.
+  int get _ranked => (data?['rankedStudents'] as num?)?.toInt() ?? 0;
+  int get _total => (data?['totalStudents'] as num?)?.toInt() ?? 0;
+
+  /// One university: colour chip, abbreviation, a bar scaled against the
+  /// most-listed university, then the raw count and its percentage. Scaling to
+  /// the leader rather than to 100 keeps the differences visible when every
+  /// university sits in a narrow band.
+  Widget _bar(Map u) {
+    final unis = List<Map>.from(data!['universities'] as List);
+    final maxCount = unis.fold<int>(1, (m, x) => math.max(m, (x['count'] as num).toInt()));
+    final count = (u['count'] as num).toInt();
+    final pct = (u['pct'] as num).toDouble();
+    final color = C.uni('${u['abbr']}');
+    return GestureDetector(
+      onTap: () => _showDetail(u),
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(children: [
+          Container(width: 10, height: 10,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 52,
+            child: Text('${u['abbr']}',
+                style: const TextStyle(fontSize: 11.5, color: C.ink, fontWeight: FontWeight.w700),
+                overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: count / maxCount,
+                minHeight: 9,
+                backgroundColor: C.sand,
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 86,
+            child: Text('$count  ·  ${pct.toStringAsFixed(0)}%',
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontSize: 11.5, color: C.ink, fontWeight: FontWeight.w600)),
+          ),
+        ]),
+      ),
+    );
+  }
+
   void _showDetail(Map u) {
     showDialog(
       context: context,
@@ -8113,7 +8174,9 @@ class _UniversityPopularityChartState extends State<_UniversityPopularityChart> 
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
         ]),
         content: Text(
-            '${u['name']}\n${u['count']} of ${data!['totalStudents']} graduate${data!['totalStudents'] == 1 ? '' : 's'} had this university in their latest ranked list.',
+            '${u['name']}\n\n${u['count']} of the $_ranked graduate${_ranked == 1 ? '' : 's'} who have generated a '
+            'ranking had this university in their latest list.\n\n'
+            '$_total graduates are registered in total; ${_total - _ranked} have not ranked yet.',
             style: const TextStyle(color: C.muted, fontSize: 12.5, height: 1.4)),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
       ),
@@ -8130,129 +8193,37 @@ class _UniversityPopularityChartState extends State<_UniversityPopularityChart> 
         const Text('UNIVERSITY POPULARITY', style: TextStyle(
             fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: C.muted)),
         const SizedBox(height: 4),
-        const Text('Share of A2 graduates whose latest ranked list included each university.',
-            style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
+        Text(
+            loading || data == null
+                ? 'How many graduates had each university in their latest ranked list.'
+                : 'Of the $_ranked graduates who have generated a ranking, how many had each '
+                  'university in their latest list. $_total registered in total.',
+            style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
         const SizedBox(height: 14),
         if (loading)
           const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: C.green)))
         else if (data == null)
           const Text('Could not load popularity data.', style: TextStyle(color: C.muted, fontSize: 12))
-        else if ((data!['totalStudents'] as int) == 0)
+        else if (_ranked == 0)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
             child: Text('No A2 graduates have ranked universities yet.', style: TextStyle(color: C.muted, fontSize: 12)),
           )
         else
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            GestureDetector(
-              onTapUp: (details) {
-                final unis = List<Map>.from(data!['universities'] as List);
-                // localPosition is already relative to this GestureDetector,
-                // which is sized exactly to the CustomPaint below it.
-                final local = details.localPosition;
-                const size = 160.0;
-                const center = Offset(size / 2, size / 2);
-                final dx = local.dx - center.dx, dy = local.dy - center.dy;
-                final dist = math.sqrt(dx * dx + dy * dy);
-                if (dist > size / 2) return;
-                var angle = math.atan2(dy, dx) + math.pi / 2;
-                if (angle < 0) angle += 2 * math.pi;
-                double cum = 0;
-                for (final u in unis) {
-                  final pct = (u['pct'] as num).toDouble();
-                  final sweep = pct / 100 * 2 * math.pi;
-                  if (sweep <= 0) continue;
-                  if (angle >= cum && angle < cum + sweep) { _showDetail(u); return; }
-                  cum += sweep;
-                }
-              },
-              child: CustomPaint(
-                size: const Size(160, 160),
-                painter: _PiePainter(List<Map>.from(data!['universities'] as List)),
-              ),
-            ),
-            const SizedBox(width: 18),
-            Expanded(
-              child: Wrap(spacing: 12, runSpacing: 10, children: List<Map>.from(data!['universities'] as List).map((u) {
-                return GestureDetector(
-                  onTap: () => _showDetail(u),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(width: 10, height: 10,
-                        decoration: BoxDecoration(color: C.uni('${u['abbr']}'), shape: BoxShape.circle)),
-                    const SizedBox(width: 6),
-                    Text('${u['abbr']} · ${(u['pct'] as num).toStringAsFixed(0)}%',
-                        style: const TextStyle(fontSize: 11.5, color: C.ink, fontWeight: FontWeight.w600)),
-                  ]),
-                );
-              }).toList()),
-            ),
-          ]),
+          ...List<Map>.from(data!['universities'] as List).map(_bar),
       ]),
     );
   }
 }
 
-class _PiePainter extends CustomPainter {
-  final List<Map> universities;
-  // Opt-in: draws a small dark rounded badge with "NN%" on top of each
-  // slice, matching the reference chart style. Off by default so the admin
-  // popularity chart (many slices, tap-for-detail instead) is unaffected.
-  final bool showLabels;
-  _PiePainter(this.universities, {this.showLabels = false});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = math.min(size.width, size.height) / 2;
-    double startAngle = -math.pi / 2;
-    bool any = false;
-    for (final u in universities) {
-      final pct = (u['pct'] as num).toDouble();
-      final sweep = pct / 100 * 2 * math.pi;
-      if (sweep <= 0) continue;
-      any = true;
-      // A slice may carry its own explicit color (e.g. the staff dashboard's
-      // two-metric chart, where both slices are the same university so
-      // C.uni(abbr) can't tell them apart) -- fall back to the university
-      // color lookup for callers that don't (admin's multi-university chart).
-      final paint = Paint()..color = (u['color'] as Color?) ?? C.uni('${u['abbr']}')..style = PaintingStyle.fill;
-      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true, paint);
-      // Skip a label on a sliver too thin to hold one legibly.
-      if (showLabels && pct >= 5) {
-        final mid = startAngle + sweep / 2;
-        final labelCenter = center + Offset(math.cos(mid), math.sin(mid)) * (radius * 0.62);
-        final text = '${pct.toStringAsFixed(0)}%';
-        final tp = TextPainter(
-          text: TextSpan(text: text, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        final badgeRect = Rect.fromCenter(
-            center: labelCenter, width: tp.width + 14, height: tp.height + 8);
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(badgeRect, const Radius.circular(6)),
-          Paint()..color = Colors.black.withValues(alpha: 0.55),
-        );
-        tp.paint(canvas, labelCenter - Offset(tp.width / 2, tp.height / 2));
-      }
-      startAngle += sweep;
-    }
-    if (!any) {
-      final paint = Paint()..color = C.sand..style = PaintingStyle.fill;
-      canvas.drawCircle(center, radius, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _PiePainter oldDelegate) =>
-      oldDelegate.universities != universities || oldDelegate.showLabels != showLabels;
-}
-
 /// Staff-facing counterpart to `_UniversityPopularityChart` -- instead of
-/// comparing many universities to each other, this compares two reach
-/// metrics for the staff's OWN university: how many students currently have
-/// it in their latest ranked top-5, versus how many actually tapped Apply.
-/// Both slices are the same university, so `C.uni(abbr)` can't tell them
-/// apart -- explicit, hand-picked colors are passed to `_PiePainter` instead.
+/// comparing many universities to each other, this tracks the staff's OWN
+/// university down a two-step funnel: how many students have it in their
+/// latest ranked top-5, and how many of THOSE went on to tap Apply.
+///
+/// A funnel rather than a pie, because the second step is a subset of the
+/// first, not a rival slice of it. Greyscale, matching the dissertation's
+/// figures.
 class _StaffReachPieChart extends StatefulWidget {
   final String uniId;
   const _StaffReachPieChart({required this.uniId});
@@ -8261,8 +8232,10 @@ class _StaffReachPieChart extends StatefulWidget {
 }
 
 class _StaffReachPieChartState extends State<_StaffReachPieChart> {
-  static const _appearedColor = Color(0xFF4472C4); // dark blue
-  static const _appliedColor = Color(0xFFA9C0E8); // light blue
+  // Greyscale, matching the response-status figure in the dissertation so a
+  // screenshot of this chart sits beside it without a palette clash.
+  static const _appearedColor = Color(0xFF595959); // dark grey
+  static const _appliedColor = Color(0xFFBFBFBF); // light grey
   int? rankedListCount;
   int? applyCount;
   bool loading = true;
@@ -8288,15 +8261,39 @@ class _StaffReachPieChartState extends State<_StaffReachPieChart> {
     if (mounted) toast(context, 'Downloading dashboard-overview.csv');
   }
 
+  /// One funnel step, scaled against the widest step above it so the drop-off
+  /// is visible as length rather than having to be read off the numbers.
+  Widget _step(String label, int count, int widest, Color color) => Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: C.ink, fontWeight: FontWeight.w600))),
+            Text('$count', style: const TextStyle(fontSize: 14, color: C.ink, fontWeight: FontWeight.w700)),
+          ]),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: widest > 0 ? count / widest : 0,
+              minHeight: 16,
+              backgroundColor: C.sand,
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+            ),
+          ),
+        ]),
+      );
+
   @override
   Widget build(BuildContext context) {
-    final total = (rankedListCount ?? 0) + (applyCount ?? 0);
-    final slices = [
-      {'label': 'Appeared on lists', 'count': rankedListCount ?? 0, 'color': _appearedColor,
-        'pct': total > 0 ? (rankedListCount ?? 0) / total * 100 : 0},
-      {'label': 'Tapped Apply', 'count': applyCount ?? 0, 'color': _appliedColor,
-        'pct': total > 0 ? (applyCount ?? 0) / total * 100 : 0},
-    ];
+    // A funnel, not a pie. Applicants are a SUBSET of the students who had
+    // this university in their ranked list, not a separate group, so the two
+    // never summed to a whole -- a pie of them implied a split that does not
+    // exist. Measured against the wider step, the second bar is the number a
+    // recruiter actually wants: the conversion rate.
+    final appeared = rankedListCount ?? 0;
+    final applied = applyCount ?? 0;
+    final total = appeared;
+    final conversion = appeared > 0 ? applied / appeared * 100 : 0.0;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -8316,7 +8313,7 @@ class _StaffReachPieChartState extends State<_StaffReachPieChart> {
             ),
         ]),
         const SizedBox(height: 4),
-        const Text('Students who had you in their ranked list vs. who tapped Apply.',
+        const Text('How many students reached you, and how many of those went on to apply.',
             style: TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
         const SizedBox(height: 14),
         if (loading)
@@ -8326,26 +8323,13 @@ class _StaffReachPieChartState extends State<_StaffReachPieChart> {
             padding: EdgeInsets.symmetric(vertical: 12),
             child: Text('Not enough data yet.', style: TextStyle(color: C.muted, fontSize: 12)),
           )
-        else
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            CustomPaint(
-              size: const Size(120, 120),
-              painter: _PiePainter(slices, showLabels: true),
-            ),
-            const SizedBox(width: 18),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: slices.map((s) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(width: 12, height: 12, color: s['color'] as Color),
-                    const SizedBox(width: 8),
-                    Text('${s['label']}', style: const TextStyle(fontSize: 12, color: C.ink, fontWeight: FontWeight.w600)),
-                  ]),
-                );
-              }).toList()),
-            ),
-          ]),
+        else ...[
+          _step('Appeared on students\' lists', appeared, appeared, _appearedColor),
+          _step('Of those, tapped Apply', applied, appeared, _appliedColor),
+          const SizedBox(height: 4),
+          Text('${conversion.toStringAsFixed(0)}% of the students who saw you in their ranking applied.',
+              style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
+        ],
       ]),
     );
   }

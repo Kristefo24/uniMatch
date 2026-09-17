@@ -65,12 +65,20 @@ async function connect() {
 
     const blob = JSON.parse(rows[0].data || '{}');
     const criteria = blob.criteria || {};
-    console.log('\ncurrent:');
-    console.log('  religiousBased =', JSON.stringify(criteria.religiousBased));
-    console.log('  religion       =', JSON.stringify(criteria.religion));
-    console.log('  C25            =', JSON.stringify(criteria.C25));
+    // criteria_values is what /rank actually scores on; staff_data.criteria is
+    // the staff-facing copy that saveStaffCriteria syncs from. Both have to
+    // move or the app shows one answer and ranks on another.
+    const { rows: cv } = await client.query(
+      'select value from criteria_values where university_id = $1 and code = $2', [UNI_ID, 'C25']);
+    const scored = cv.length ? Number(cv[0].value) : null;
 
-    if (criteria.religiousBased !== true) {
+    console.log('\ncurrent:');
+    console.log('  staff_data.religiousBased =', JSON.stringify(criteria.religiousBased));
+    console.log('  staff_data.religion       =', JSON.stringify(criteria.religion));
+    console.log('  staff_data.C25            =', JSON.stringify(criteria.C25));
+    console.log('  criteria_values.C25       =', JSON.stringify(scored), '  <- what /rank scores on');
+
+    if (criteria.religiousBased !== true && scored === 0) {
       console.log('\nAlready correct -- nothing to do.');
       return;
     }
@@ -94,20 +102,28 @@ async function connect() {
     const dir = path.join(__dirname, '..', 'backups');
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `ulk-religion-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
-    fs.writeFileSync(file, JSON.stringify({ university_id: UNI_ID, data: blob }, null, 2));
+    fs.writeFileSync(file, JSON.stringify(
+      { university_id: UNI_ID, data: blob, criteria_values_C25: scored }, null, 2));
     console.log(`\nbacked up to ${file}`);
 
     await client.query('begin');
     await client.query('update staff_data set data = $2 where university_id = $1',
       [UNI_ID, JSON.stringify({ ...blob, criteria: next })]);
+    await client.query(
+      'insert into criteria_values (university_id, code, value) values ($1, $2, $3) ' +
+      'on conflict (university_id, code) do update set value = excluded.value',
+      [UNI_ID, 'C25', 0]);
     await client.query('commit');
 
     const after = await client.query('select data from staff_data where university_id = $1', [UNI_ID]);
     const c = JSON.parse(after.rows[0].data || '{}').criteria || {};
+    const { rows: cvAfter } = await client.query(
+      'select value from criteria_values where university_id = $1 and code = $2', [UNI_ID, 'C25']);
     console.log('\nnow:');
-    console.log('  religiousBased =', JSON.stringify(c.religiousBased));
-    console.log('  religion       =', JSON.stringify(c.religion));
-    console.log('  C25            =', JSON.stringify(c.C25));
+    console.log('  staff_data.religiousBased =', JSON.stringify(c.religiousBased));
+    console.log('  staff_data.religion       =', JSON.stringify(c.religion));
+    console.log('  staff_data.C25            =', JSON.stringify(c.C25));
+    console.log('  criteria_values.C25       =', JSON.stringify(cvAfter.length ? Number(cvAfter[0].value) : null));
   } catch (e) {
     try { await client.query('rollback'); } catch { /* nothing to roll back */ }
     throw e;
