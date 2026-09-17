@@ -2862,9 +2862,21 @@ class _CompareSheetState extends State<_CompareSheet> {
     final label = widget.labelByCode[s.code] ?? s.code;
     final leftAhead = s.l > s.r;
     // /rank scores C01 as the distance from the graduate's budget range, so
-    // the number and the bar are measuring different things -- say so rather
-    // than let a cheaper university look wrongly rated.
-    final budgeted = s.code == 'C01' && (Session.budgetMin != null || Session.budgetMax != null);
+    // the number and the bar are measuring different things -- two different
+    // fees can both score 100 for both fitting the budget, which looks broken
+    // unless we say why.
+    //
+    // Read that off the data rather than Session.budgetMin/Max: a saved
+    // ranking replayed from "My rankings" carries the budget-adjusted scores
+    // without restoring the session fields, and that is exactly the screen
+    // where the explanation is missing otherwise. A scored value that differs
+    // from the staff-entered fee means the server rewrote it.
+    final budgeted = s.code == 'C01' &&
+        [widget.fixed, other].any((u) {
+          final scored = ((u['vals'] as Map?) ?? const {})['C01'];
+          final fee = ((u['staffAnswers'] as Map?) ?? const {})['C01'];
+          return scored is num && fee is num && scored != fee;
+        });
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
