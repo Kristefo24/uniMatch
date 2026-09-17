@@ -8223,7 +8223,10 @@ class _UniversityPopularityChartState extends State<_UniversityPopularityChart> 
                                   fontWeight: FontWeight.w600),
                               overflow: TextOverflow.ellipsis),
                         ),
-                        Text('${u['count']} · ${(u['pct'] as num).toStringAsFixed(1)}%',
+                        // Percentage only -- the raw count is one tap away in
+                        // the detail popup, and two numbers per row made the
+                        // legend harder to scan than the pie it explains.
+                        Text('${(u['pct'] as num).toStringAsFixed(1)}%',
                             style: const TextStyle(fontSize: 11.5, color: C.muted, fontWeight: FontWeight.w600)),
                       ]),
                     ),
