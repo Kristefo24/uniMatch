@@ -26,7 +26,7 @@ const Map<String, String> kApplyUrls = {
   // auca.ac.rw/online-application/ currently returns HTTP 500; this is the
   // applicant portal it was meant to reach, and it answers.
   'uni-auca': 'https://web.auca.ac.rw/auth/sign-in?returnUrl=%2Fdashboard',
-  'uni-kepler': 'https://kepler.org/apply/',
+  'uni-kepler': 'https://mis.keplercollege.ac.rw/signup.php',
   'uni-ulk': 'https://ulk.schoolgear.co.rw/online_application/application/5c139774-f615-4ffa-b4b9-41f9dd4293de',
 };
 
