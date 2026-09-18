@@ -856,11 +856,13 @@ Future<void> _editProfile(BuildContext context) async {
                   const Text('Shown to graduates on the ranking page.',
                       style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
                   const SizedBox(height: 10),
-                  TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
+                  validatedField(contactEmail, 'info@university.ac.rw', emailError,
+                      keyboard: TextInputType.emailAddress),
                   const SizedBox(height: 12),
                   rwPhoneField(contactPhone),
                   const SizedBox(height: 12),
-                  TextField(controller: website, decoration: fieldDeco('www.university.ac.rw')),
+                  validatedField(website, 'www.university.ac.rw',
+                      (v) => websiteError(v, what: 'website'), keyboard: TextInputType.url),
                   const SizedBox(height: 16),
                   const Text('APPLICATION LINK', style: TextStyle(
                       fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
@@ -868,8 +870,8 @@ Future<void> _editProfile(BuildContext context) async {
                   const Text('Where the Apply button sends a graduate. Leave blank to keep the current one.',
                       style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
                   const SizedBox(height: 10),
-                  TextField(controller: applyUrl,
-                      decoration: fieldDeco('apply.university.ac.rw/online-application')),
+                  validatedField(applyUrl, 'apply.university.ac.rw/online-application',
+                      (v) => websiteError(v, what: 'application link'), keyboard: TextInputType.url),
                 ],
               ]),
             ),
@@ -886,6 +888,16 @@ Future<void> _editProfile(BuildContext context) async {
                   if (contactPhone.text.trim().isNotEmpty) {
                     final err = rwPhoneError(contactPhone.text);
                     if (err != null) { toast(ctx, 'Contact phone: $err'); return; }
+                  }
+                  if (website.text.trim().isNotEmpty &&
+                      websiteError(website.text, what: 'website') != null) {
+                    toast(ctx, 'The website address does not look right.');
+                    return;
+                  }
+                  if (applyUrl.text.trim().isNotEmpty &&
+                      websiteError(applyUrl.text, what: 'application link') != null) {
+                    toast(ctx, 'The application link does not look right.');
+                    return;
                   }
                 }
                 setSheet(() => saving = true);
@@ -1183,6 +1195,46 @@ class _RwPhoneFormatter extends TextInputFormatter {
     );
   }
 }
+
+String? emailError(String s) =>
+    isValidEmail(s) ? null : 'That does not look like an email address';
+
+/// Mirrors server/validate.js's website(): a host with a dot in it, scheme
+/// optional since the app adds https:// when opening the link. Catches the
+/// values that actually produce a dead link on a graduate's screen.
+String? websiteError(String s, {String what = 'address'}) {
+  final host = s.trim().replaceFirst(RegExp(r'^https?://', caseSensitive: false), '').split('/').first;
+  return RegExp(r'^[^\s/@]+\.[^\s/@]+$').hasMatch(host)
+      ? null
+      : 'That does not look like a valid $what, e.g. www.university.ac.rw';
+}
+
+/// A text field that shows its own error underneath as the user types, rather
+/// than staying silent until Save and then rejecting the whole form. Silent
+/// while empty -- an error on an untouched field reads as a telling-off.
+///
+/// The TextField is deliberately outside the listener: rebuilding it on every
+/// keystroke tears down Flutter web's hidden input and drops characters.
+Widget validatedField(
+  TextEditingController c,
+  String hint,
+  String? Function(String) validate, {
+  TextInputType? keyboard,
+}) =>
+    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      TextField(controller: c, keyboardType: keyboard, decoration: fieldDeco(hint)),
+      ValueListenableBuilder<TextEditingValue>(
+        valueListenable: c,
+        builder: (_, value, _) {
+          final err = value.text.trim().isEmpty ? null : validate(value.text);
+          if (err == null) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.only(top: 6, left: 4),
+            child: Text(err, style: const TextStyle(color: Color(0xFFC25A1F), fontSize: 11.5)),
+          );
+        },
+      ),
+    ]);
 
 /// A phone input with a fixed, un-typeable +250 so the country code can never
 /// be omitted or mistyped.
@@ -1813,7 +1865,8 @@ class _SignupScreenState extends State<SignupScreen> {
               TextField(controller: name, decoration: fieldDeco('e.g. Amara Mukamana')),
               const SizedBox(height: 16),
               _label('EMAIL'),
-              TextField(controller: email, decoration: fieldDeco('amara@example.com')),
+              validatedField(email, 'amara@example.com', emailError,
+                  keyboard: TextInputType.emailAddress),
               const SizedBox(height: 16),
 
               // ---- STUDENT: A2 combination ----
@@ -1885,7 +1938,8 @@ class _SignupScreenState extends State<SignupScreen> {
                 ),
                 const SizedBox(height: 16),
                 _label('UNIVERSITY CONTACT EMAIL'),
-                TextField(controller: contactEmail, decoration: fieldDeco('info@university.ac.rw')),
+                validatedField(contactEmail, 'info@university.ac.rw', emailError,
+                    keyboard: TextInputType.emailAddress),
                 const SizedBox(height: 16),
                 _label('UNIVERSITY CONTACT PHONE'),
                 rwPhoneField(contactPhone),
