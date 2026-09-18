@@ -1068,7 +1068,7 @@ class UniMatchApp extends StatelessWidget {
       builder: (context, child) => GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
-        child: child,
+        child: _phoneColumn(child),
       ),
       home: const OnboardingScreen(),
       navigatorObservers: [routeObserver],
@@ -1134,6 +1134,36 @@ InputDecoration fieldDeco(String hint, {IconData? icon}) => InputDecoration(
       focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: C.green, width: 1.6)),
     );
+
+/// The widest UniMatch is ever laid out. Every screen is designed for a phone,
+/// so beyond this the content only gets more thinly spread, never more useful.
+const double _kMaxAppWidth = 480;
+
+/// Keeps the app a centred phone-width column on a wide window.
+///
+/// On a phone this does nothing at all -- the screen is narrower than the cap,
+/// so the child is returned untouched. It matters on the desktop build and on
+/// a desktop browser, where the alternative is every screen stretching across
+/// 1920px and reading as a broken web page rather than a phone app.
+///
+/// Wrapped around the MaterialApp's child, so dialogs and bottom sheets sit
+/// inside the column with everything else instead of spanning the display.
+Widget _phoneColumn(Widget? child) {
+  if (child == null) return const SizedBox.shrink();
+  return LayoutBuilder(builder: (context, c) {
+    if (c.maxWidth <= _kMaxAppWidth) return child;
+    return ColoredBox(
+      // Darker than the app itself, so the column reads as the thing to look
+      // at rather than as a page that failed to fill its window.
+      color: const Color(0xFF14201B),
+      child: Center(
+        child: ClipRect(
+          child: SizedBox(width: _kMaxAppWidth, child: child),
+        ),
+      ),
+    );
+  });
+}
 
 /// ---- input validation -----------------------------------------------------
 ///
