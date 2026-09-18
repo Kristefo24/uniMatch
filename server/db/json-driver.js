@@ -154,6 +154,10 @@ function staffExtras(uniId) {
     motoStops: Array.isArray(c.motoStops) ? c.motoStops : [],
     campusPins: (c.campusPins && typeof c.campusPins === 'object') ? c.campusPins : {},
     website: c.website || null,
+    // Staff-entered application page. Null falls back to the built-in
+    // kApplyUrls map in the app, so the six seeded universities keep
+    // working until their officer sets one.
+    applyUrl: c.applyUrl || null,
     contactEmail: c.contactEmail || null,
     contactPhone: c.contactPhone || null,
   };
@@ -165,7 +169,7 @@ function staffExtras(uniId) {
 // so carry them forward and ignore whatever the caller sent -- otherwise a
 // stale criteria screen would silently wipe or revert contacts edited
 // elsewhere. This makes the contacts endpoint the single source of truth.
-const CONTACT_KEYS = ['contactEmail', 'contactPhone', 'website'];
+const CONTACT_KEYS = ['contactEmail', 'contactPhone', 'website', 'applyUrl'];
 function carryForwardContacts(criteria, previous) {
   const merged = { ...criteria };
   for (const k of CONTACT_KEYS) {
@@ -294,7 +298,7 @@ module.exports = {
   // Merges just the contact email/phone into the existing criteria blob --
   // never replaces the whole thing, unlike saveStaffCriteria, since this is
   // called from signup which doesn't have (and mustn't wipe) the rest of it.
-  async setUniversityContacts(uniId, { contactEmail, contactPhone, website }) {
+  async setUniversityContacts(uniId, { contactEmail, contactPhone, website, applyUrl }) {
     db.staffData = db.staffData || {};
     const existing = db.staffData[uniId] || { campuses: [], combos: {}, criteria: {} };
     const criteria = { ...(existing.criteria || {}) };
@@ -561,6 +565,30 @@ module.exports = {
     if (!row) return null;
     return { ranked: row.ranked || [], criteria: row.criteria || [], updatedAt: row.updatedAt };
   },
+  // A2 graduates who have registered but never applied anywhere -- the list an
+  // admin needs to chase. Split by whether they got as far as generating a
+  // ranking: someone who saw their matches and stopped is a different problem
+  // from someone who never used the system at all.
+  async notAppliedStudents() {
+    const applied = new Set((db.applications || []).map(a => a.userId).filter(Boolean));
+    const out = (db.users || [])
+      .filter(u => u.role === 'student' && !applied.has(u.id))
+      .map(u => {
+        const snap = (db.userLastRanking || {})[u.id];
+        const a = (snap && snap.ranked) || [];
+        return {
+          name: u.name || '', email: u.email || '', track: u.track || '',
+          home: u.homeArea || u.home || '',
+          hasRanking: a.length > 0, listed: a.length,
+          topMatch: (a[0] && (a[0].abbr || a[0].id)) || '',
+          shortlisted: (db.shortlists || []).filter(s => s.userId === u.id).length,
+        };
+      });
+    out.sort((x, y) => (y.hasRanking ? 1 : 0) - (x.hasRanking ? 1 : 0) ||
+      x.name.toLowerCase().localeCompare(y.name.toLowerCase()));
+    return out;
+  },
+
   // Where graduates actually applied. Unlike "appeared in someone's ranked
   // list", an application is exactly one per graduate -- verified in
   // production: 71 applications across 71 distinct applicants, none twice --

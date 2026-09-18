@@ -184,6 +184,10 @@ function buildUniversity(u, camps, valsMap, rating, sd) {
     motoStops: Array.isArray(c.motoStops) ? c.motoStops : [],
     campusPins: (c.campusPins && typeof c.campusPins === 'object') ? c.campusPins : {},
     website: c.website || null,
+    // Staff-entered application page. Null falls back to the built-in
+    // kApplyUrls map in the app, so the six seeded universities keep
+    // working until their officer sets one.
+    applyUrl: c.applyUrl || null,
     contactEmail: c.contactEmail || null,
     contactPhone: c.contactPhone || null,
   };
@@ -241,7 +245,7 @@ async function hydrateAll(unis) {
 // so carry them forward and ignore whatever the caller sent -- otherwise a
 // stale criteria screen would silently wipe or revert contacts edited
 // elsewhere. This makes the contacts endpoint the single source of truth.
-const CONTACT_KEYS = ['contactEmail', 'contactPhone', 'website'];
+const CONTACT_KEYS = ['contactEmail', 'contactPhone', 'website', 'applyUrl'];
 function carryForwardContacts(criteria, previous) {
   const merged = { ...criteria };
   for (const k of CONTACT_KEYS) {
@@ -584,12 +588,13 @@ module.exports = {
   // Merges just the contact email/phone into the existing criteria blob --
   // never replaces the whole thing, unlike saveStaffCriteria, since this is
   // called from signup which doesn't have (and mustn't wipe) the rest of it.
-  async setUniversityContacts(uniId, { contactEmail, contactPhone, website }) {
+  async setUniversityContacts(uniId, { contactEmail, contactPhone, website, applyUrl }) {
     const d = await this._staffData(uniId);
     d.criteria = { ...(d.criteria || {}) };
     if (contactEmail != null) d.criteria.contactEmail = contactEmail;
     if (contactPhone != null) d.criteria.contactPhone = contactPhone;
     if (website != null) d.criteria.website = website;
+    if (applyUrl != null) d.criteria.applyUrl = applyUrl;
     await this._saveStaffData(uniId, d);
     return d;
   },
@@ -901,6 +906,35 @@ module.exports = {
     try { criteria = JSON.parse(rows[0].criteria) || []; } catch { /* ignore malformed row */ }
     return { ranked, criteria, updatedAt: rows[0].updated_at };
   },
+  // A2 graduates who have registered but never applied anywhere -- the list an
+  // admin needs to chase. Split by whether they got as far as generating a
+  // ranking: someone who saw their matches and stopped is a different problem
+  // from someone who never used the system at all.
+  async notAppliedStudents() {
+    const { rows } = await q(`
+      SELECT u.id, u.name, u.email, COALESCE(u.track,'') AS track,
+             COALESCE(u.home_area, u.home, '') AS home,
+             lr.university_ids,
+             (SELECT COUNT(*)::int FROM shortlists s WHERE s.user_id = u.id) AS shortlisted
+      FROM users u
+      LEFT JOIN user_last_ranking lr ON lr.user_id = u.id
+      WHERE u.role = 'student'
+        AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.user_id = u.id)
+      ORDER BY (lr.user_id IS NOT NULL) DESC, lower(u.name)`);
+    return rows.map(r => {
+      let listed = 0, topMatch = '';
+      try {
+        const a = JSON.parse(r.university_ids || '[]') || [];
+        listed = a.length;
+        topMatch = (a[0] && (a[0].abbr || a[0].id)) || '';
+      } catch { /* malformed snapshot -- treated as no ranking */ }
+      return {
+        name: r.name || '', email: r.email || '', track: r.track, home: r.home,
+        hasRanking: listed > 0, listed, topMatch, shortlisted: Number(r.shortlisted) || 0,
+      };
+    });
+  },
+
   // Where graduates actually applied. Unlike "appeared in someone's ranked
   // list", an application is exactly one per graduate -- verified in
   // production: 71 applications across 71 distinct applicants, none twice --

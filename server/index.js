@@ -570,6 +570,10 @@ app.put('/staff/:uniId/contacts', auth(), requireStaffOfUniversity(), wrap(async
     contactEmail: v.str(body.contactEmail) ? v.email(body.contactEmail, 'Contact email') : null,
     contactPhone: v.str(body.contactPhone) ? v.phone(body.contactPhone, 'Contact phone') : null,
     website: v.website(body.website),
+    // Where the graduate's Apply button sends them. Validated the same way as
+    // the website: a dead link here is the last thing they hit after working
+    // through the whole ranking.
+    applyUrl: v.website(body.applyUrl, 'Application link'),
   }));
 }));
 app.get('/admin/report', auth(), requireRole('admin'), wrap(async (_req, res) => {
@@ -723,6 +727,106 @@ app.get('/admin/report/applicants.xlsx', auth(), requireRole('admin'), wrap(asyn
   const buffer = await workbook.xlsx.writeBuffer();
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename="a2-applicants.xlsx"');
+  res.send(Buffer.from(buffer));
+}));
+
+// A2 graduates who registered but never applied anywhere. Generated live from
+// whatever the system currently holds, so the list is never a stale export.
+app.get('/admin/report/not-applied', auth(), requireRole('admin'), wrap(async (_req, res) => {
+  const students = await db.notAppliedStudents();
+  res.json({
+    students,
+    total: students.length,
+    withRanking: students.filter(s => s.hasRanking).length,
+    neverRanked: students.filter(s => !s.hasRanking).length,
+  });
+}));
+
+app.get('/admin/report/not-applied.xlsx', auth(), requireRole('admin'), wrap(async (_req, res) => {
+  const students = await db.notAppliedStudents();
+  const warm = students.filter(s => s.hasRanking).length;
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'UniMatch';
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet('Not yet applied');
+
+  sheet.mergeCells('A1:H1');
+  sheet.getCell('A1').value = 'A2 graduates who have not applied';
+  sheet.getCell('A1').font = { name: 'Arial', size: 13, bold: true, color: { argb: 'FF1B1D1B' } };
+  sheet.mergeCells('A2:H2');
+  sheet.getCell('A2').value =
+    `${students.length} outstanding · ${warm} generated a ranking and stopped · ` +
+    `${students.length - warm} never ranked · generated ${new Date().toISOString().slice(0, 10)}`;
+  sheet.getCell('A2').font = { name: 'Arial', size: 9, italic: true, color: { argb: 'FF5E625E' } };
+  sheet.getRow(1).height = 20;
+
+  sheet.columns = [
+    { key: 'name', width: 30 }, { key: 'email', width: 32 }, { key: 'track', width: 14 },
+    { key: 'home', width: 24 }, { key: 'ranked', width: 20 }, { key: 'listed', width: 20 },
+    { key: 'top', width: 12 }, { key: 'short', width: 12 },
+  ];
+
+  const HEAD = ['Name', 'Email', 'Combination', 'Home area',
+                'Generated a ranking?', 'Universities matched', 'Top match', 'Shortlisted'];
+  const head = sheet.getRow(4);
+  HEAD.forEach((h, i) => {
+    const cell = head.getCell(i + 1);
+    cell.value = h;
+    cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F6D3F' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  });
+  head.height = 26;
+
+  students.forEach((s, i) => {
+    const row = sheet.getRow(5 + i);
+    row.getCell(1).value = s.name;
+    row.getCell(2).value = s.email;
+    row.getCell(3).value = s.track;
+    row.getCell(4).value = s.home;
+    row.getCell(5).value = s.hasRanking ? 'Yes' : 'No';
+    row.getCell(6).value = s.hasRanking ? s.listed : '';
+    row.getCell(7).value = s.topMatch;
+    row.getCell(8).value = s.shortlisted || '';
+    for (let c = 1; c <= 8; c++) {
+      const cell = row.getCell(c);
+      cell.font = { name: 'Arial', size: 10 };
+      // Amber marks the graduates who saw their matches and stopped -- the
+      // ones closest to converting, and worth chasing first.
+      if (s.hasRanking) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3D6' } };
+      if (c >= 5) cell.alignment = { horizontal: 'center' };
+    }
+  });
+
+  const last = 4 + students.length;
+  const edge = { style: 'thin', color: { argb: 'FFD6D8D4' } };
+  for (let r = 4; r <= Math.max(last, 4); r++) {
+    for (let c = 1; c <= 8; c++) {
+      sheet.getRow(r).getCell(c).border = { top: edge, left: edge, bottom: edge, right: edge };
+    }
+  }
+  if (!students.length) {
+    sheet.getCell('A5').value = 'Every registered A2 graduate has applied.';
+    sheet.getCell('A5').font = { name: 'Arial', size: 10, italic: true, color: { argb: 'FF5E625E' } };
+  }
+
+  const key = sheet.getRow(last + 2);
+  key.getCell(1).value = 'Amber = saw their matches but did not apply — closest to converting.';
+  key.getCell(1).font = { name: 'Arial', size: 9, italic: true, color: { argb: 'FF5E625E' } };
+
+  sheet.views = [{ state: 'frozen', ySplit: 4 }];
+  sheet.autoFilter = { from: 'A4', to: `H${Math.max(last, 4)}` };
+  await sheet.protect(process.env.REPORT_LOCK_PASSWORD || 'unimatch', {
+    selectLockedCells: true, selectUnlockedCells: true,
+    formatCells: false, formatColumns: false, formatRows: false,
+    insertRows: false, insertColumns: false, deleteRows: false, deleteColumns: false,
+    sort: false, autoFilter: false, pivotTables: false,
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="a2-not-yet-applied.xlsx"');
   res.send(Buffer.from(buffer));
 }));
 

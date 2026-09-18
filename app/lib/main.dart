@@ -17,12 +17,15 @@ import 'csv_download_stub.dart' if (dart.library.html) 'csv_download_web.dart' a
 
 /// Official application pages per seeded university id.
 const Map<String, String> kApplyUrls = {
-  'uni-uok': 'https://www.uok.ac.rw/admissions/',
+  // UoK's link arrived carrying Google Analytics linker parameters (_gl=...).
+  // Those encode one browser's session and go stale within minutes, so they're
+  // dropped -- every graduate would otherwise be sent the same expired token.
+  'uni-uok': 'https://apply.uok.ac.rw/',
   'uni-eau': 'https://mis.eaur.ac.rw/apply.php?bc',
   'uni-alu': 'https://www.alueducation.com/apply/',
   'uni-auca': 'https://auca.ac.rw/apply/',
   'uni-kepler': 'https://www.kepler.org/apply/',
-  'uni-ulk': 'https://www.ulk.ac.rw/admission/',
+  'uni-ulk': 'https://ulk.schoolgear.co.rw/online_application/application/5c139774-f615-4ffa-b4b9-41f9dd4293de',
 };
 
 /// ---------------------------------------------------------------------------
@@ -484,11 +487,12 @@ class Api {
   /// The university's public contact details, shown to graduates on the
   /// ranking page. Edited from the staff member's own "Edit profile" sheet.
   static Future<void> updateUniversityContacts(String uniId,
-          {String? contactEmail, String? contactPhone, String? website}) =>
+          {String? contactEmail, String? contactPhone, String? website, String? applyUrl}) =>
       _put('/staff/$uniId/contacts', {
         'contactEmail': contactEmail,
         'contactPhone': contactPhone,
         'website': website,
+        'applyUrl': applyUrl,
       });
   static Future<Map<String, dynamic>> adminReport() async =>
       Map<String, dynamic>.from(await _get('/admin/report'));
@@ -496,8 +500,17 @@ class Api {
   // Binary download (not JSON) -- can't reuse _get, which always json-decodes
   // the body; reads raw bytes instead, same auth header and error-shape
   // convention as every other Api call.
-  static Future<Uint8List> downloadAdminApplicantsXlsx() async {
-    final r = await http.get(Uri.parse('$kBaseUrl/admin/report/applicants.xlsx'), headers: _headers());
+  static Future<Map<String, dynamic>> adminNotApplied() async =>
+      Map<String, dynamic>.from(await _get('/admin/report/not-applied'));
+
+  static Future<Uint8List> downloadNotAppliedXlsx() =>
+      _downloadXlsx('/admin/report/not-applied.xlsx');
+
+  static Future<Uint8List> downloadAdminApplicantsXlsx() =>
+      _downloadXlsx('/admin/report/applicants.xlsx');
+
+  static Future<Uint8List> _downloadXlsx(String path) async {
+    final r = await http.get(Uri.parse('$kBaseUrl$path'), headers: _headers());
     if (r.statusCode >= 400) {
       Map data = {};
       try { data = jsonDecode(r.body); } catch (_) {}
@@ -722,12 +735,14 @@ Future<void> _editProfile(BuildContext context) async {
   // currently stored rather than starting blank.
   final contactEmail = TextEditingController();
   final contactPhone = TextEditingController();
+  final applyUrl = TextEditingController();
   final website = TextEditingController();
   if (Session.role == 'staff' && Session.uniId != null) {
     try {
       final uni = await Api.university(Session.uniId!);
       contactEmail.text = (uni['contactEmail'] as String?) ?? '';
       contactPhone.text = (uni['contactPhone'] as String?) ?? '';
+      applyUrl.text = (uni['applyUrl'] as String?) ?? '';
       website.text = (uni['website'] as String?) ?? '';
     } catch (_) {}
   }
@@ -844,6 +859,15 @@ Future<void> _editProfile(BuildContext context) async {
                   rwPhoneField(contactPhone),
                   const SizedBox(height: 12),
                   TextField(controller: website, decoration: fieldDeco('www.university.ac.rw')),
+                  const SizedBox(height: 16),
+                  const Text('APPLICATION LINK', style: TextStyle(
+                      fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: C.muted)),
+                  const SizedBox(height: 4),
+                  const Text('Where the Apply button sends a graduate. Leave blank to keep the current one.',
+                      style: TextStyle(color: C.muted, fontSize: 11, height: 1.4)),
+                  const SizedBox(height: 10),
+                  TextField(controller: applyUrl,
+                      decoration: fieldDeco('apply.university.ac.rw/online-application')),
                 ],
               ]),
             ),
@@ -870,7 +894,8 @@ Future<void> _editProfile(BuildContext context) async {
                         contactEmail: contactEmail.text.trim(),
                         contactPhone: contactPhone.text.trim().isEmpty
                             ? '' : rwPhoneNormalised(contactPhone.text),
-                        website: website.text.trim());
+                        website: website.text.trim(),
+                        applyUrl: applyUrl.text.trim());
                   }
                   Session.name = name.text.trim();
                   Session.track = track;
@@ -5755,9 +5780,14 @@ class _DetailScreenState extends State<DetailScreen> {
                       }
                       await Api.apply(widget.id, programmeId, Session.homeArea);
                       if (mounted) toast(context, 'Applied to ${widget.name}');
-                      final url = kApplyUrls[widget.id];
-                      if (url != null) {
-                        await launchUrl(Uri.parse(url),
+                      // What the university's own officer entered wins; the
+                      // built-in map is only a fallback for the seeded six.
+                      final staffUrl = (u['applyUrl'] as String?)?.trim();
+                      final url = (staffUrl != null && staffUrl.isNotEmpty)
+                          ? staffUrl : kApplyUrls[widget.id];
+                      if (url != null && url.isNotEmpty) {
+                        await launchUrl(
+                            Uri.parse(url.startsWith('http') ? url : 'https://$url'),
                             mode: LaunchMode.externalApplication);
                       }
                     } catch (e) {
@@ -9444,6 +9474,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   List<dynamic> criteriaUsage = [];
   String reportType = 'Applications by university';
   String reportUni = 'All universities';
+  Map<String, dynamic>? notApplied;
   DateTime from = DateTime(2026, 1, 1);
   DateTime to = DateTime(2026, 7, 16);
 
@@ -9451,6 +9482,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     'Applications by university',
     'Shortlist / interest trends',
     'A2 applicants list',
+    'Not yet applied',
     'Most-chosen criteria',
   ];
 
@@ -9458,6 +9490,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     'Applications by university': 'How many students applied to each university in the selected window.',
     'Shortlist / interest trends': 'How often each university was shortlisted by students.',
     'A2 applicants list': 'Every A2 graduate who applied, their university and home area.',
+    'Not yet applied': 'Registered A2 graduates who have not applied anywhere yet.',
     'Most-chosen criteria': 'Which criteria students weighed most when ranking.',
   };
 
@@ -9466,6 +9499,12 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     super.initState();
     _future = Api.adminReport();
     _loadCriteriaUsage(null);
+    // Fetched once here rather than on demand: it is one small request and the
+    // list must always reflect what the system holds right now, never a copy
+    // someone exported days ago.
+    Api.adminNotApplied().then((v) {
+      if (mounted) setState(() => notApplied = v);
+    }).catchError((_) {});
   }
 
   String _fmt(DateTime d) =>
@@ -9588,6 +9627,8 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                 onTap: () {
                   if (reportType == 'A2 applicants list') {
                     _downloadApplicantsXlsx();
+                  } else if (reportType == 'Not yet applied') {
+                    _downloadNotAppliedXlsx();
                   } else if (reportType == 'Most-chosen criteria') {
                     _downloadCsv(reportType, ['Criterion', 'Code', 'selections'],
                         rows.map((u) => [u['name'], u['abbr'], u['n']]).toList());
@@ -9602,7 +9643,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.download, color: C.gold, size: 18),
                     const SizedBox(width: 10),
-                    Text('Download  ${reportType == 'A2 applicants list' ? 'applicants' : rowUnit}  (${reportType == 'A2 applicants list' ? 'XLSX' : 'CSV'})',
+                    Text(_downloadLabel(reportType, rowUnit),
                         style: const TextStyle(color: C.gold, fontWeight: FontWeight.w700, fontSize: 14)),
                   ]),
                 ),
@@ -9610,7 +9651,48 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
               const SizedBox(height: 20),
               Text(reportType, style: head(17, weight: FontWeight.w500)),
               const SizedBox(height: 10),
-              if (reportType == 'A2 applicants list')
+              if (reportType == 'Not yet applied') ...[
+                if (notApplied == null)
+                  const Padding(padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator(color: C.green)))
+                else ...[
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text(
+                        '${notApplied!['withRanking']} saw their matches and stopped · '
+                        '${notApplied!['neverRanked']} never ranked',
+                        style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
+                  ),
+                  ...List<Map>.from((notApplied!['students'] as List?) ?? const []).map((g) {
+                    final warm = g['hasRanking'] == true;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(13),
+                      decoration: BoxDecoration(
+                          // Amber marks the graduates closest to converting:
+                          // they reached their matches and went no further.
+                          color: warm ? const Color(0xFFFFF7E6) : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: warm ? const Color(0xFFE8D9AE) : C.border)),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(_titleCase('${g['name'] ?? ''}'),
+                            style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
+                        Text('${g['email'] ?? ''}',
+                            style: const TextStyle(color: C.muted, fontSize: 11)),
+                        const SizedBox(height: 4),
+                        Text(
+                            warm
+                                ? 'Matched ${g['listed']} universities · top match ${g['topMatch']}'
+                                : 'Has not generated a ranking yet',
+                            style: TextStyle(
+                                color: warm ? const Color(0xFFB4772A) : C.muted,
+                                fontSize: 11, fontWeight: FontWeight.w600)),
+                      ]),
+                    );
+                  }),
+                ],
+              ]
+              else if (reportType == 'A2 applicants list')
                 ...apps.map((a) => Container(
                       margin: const EdgeInsets.only(bottom: 8),
                       padding: const EdgeInsets.all(13),
@@ -9671,6 +9753,25 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     } catch (e) {
       if (mounted) toast(context, 'Could not generate report: $e');
     }
+  }
+
+  Future<void> _downloadNotAppliedXlsx() async {
+    try {
+      final bytes = await Api.downloadNotAppliedXlsx();
+      csv_download.downloadBytes('a2-not-yet-applied.xlsx', bytes,
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      if (mounted) toast(context, 'Downloading a2-not-yet-applied.xlsx');
+    } catch (e) {
+      if (mounted) toast(context, 'Could not generate report: $e');
+    }
+  }
+
+  /// Two of the reports are workbooks rather than CSV, and one of those counts
+  /// graduates rather than rows of whatever the current table holds.
+  String _downloadLabel(String type, String rowUnit) {
+    if (type == 'A2 applicants list') return 'Download  applicants  (XLSX)';
+    if (type == 'Not yet applied') return 'Download  graduates  (XLSX)';
+    return 'Download  $rowUnit  (CSV)';
   }
 
   Widget _lbl(String t) => Padding(
