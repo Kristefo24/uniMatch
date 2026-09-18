@@ -565,9 +565,13 @@ module.exports = {
   async setStudentSuspended(id, suspended, reason) {
     // Restoring always clears the reason -- it only ever describes the
     // CURRENT suspension, never a stale one from a previous incident.
-    await q('UPDATE users SET suspended=$1, suspend_reason=$2 WHERE id=$3',
+    // Returns the student's address as well, so the caller can tell them what
+    // happened without a second lookup -- being suspended with no explanation
+    // is the version of this that generates support requests.
+    const { rows } = await q(
+      'UPDATE users SET suspended=$1, suspend_reason=$2 WHERE id=$3 RETURNING email, name',
       [suspended ? 1 : 0, suspended ? (reason || null) : null, id]);
-    return { id, suspended: !!suspended };
+    return { id, suspended: !!suspended, email: rows[0] && rows[0].email, name: rows[0] && rows[0].name };
   },
   async deleteStudent(id) {
     await q("DELETE FROM users WHERE id=$1 AND role='student'", [id]);
@@ -906,6 +910,29 @@ module.exports = {
     try { criteria = JSON.parse(rows[0].criteria) || []; } catch { /* ignore malformed row */ }
     return { ranked, criteria, updatedAt: rows[0].updated_at };
   },
+  // Graduates who registered and then never generated a single ranking -- they
+  // have an account but have not used the system at all, which is a different
+  // problem from someone who ranked and did not apply. A snapshot with an
+  // empty list counts as never ranked: it means no universities survived their
+  // filters, not that they engaged.
+  async neverRankedStudents() {
+    const { rows } = await q(`
+      SELECT u.id, u.name, u.email, COALESCE(u.track,'') AS track,
+             COALESCE(u.home_area, u.home, '') AS home,
+             lr.university_ids,
+             EXISTS (SELECT 1 FROM applications a WHERE a.user_id = u.id) AS applied
+      FROM users u
+      LEFT JOIN user_last_ranking lr ON lr.user_id = u.id
+      WHERE u.role = 'student'
+      ORDER BY lower(u.name)`);
+    return rows.filter(r => {
+      try { return !((JSON.parse(r.university_ids || '[]') || []).length); } catch { return true; }
+    }).map(r => ({
+      name: r.name || '', email: r.email || '', track: r.track, home: r.home,
+      applied: !!r.applied,
+    }));
+  },
+
   // A2 graduates who have registered but never applied anywhere -- the list an
   // admin needs to chase. Split by whether they got as far as generating a
   // ranking: someone who saw their matches and stopped is a different problem

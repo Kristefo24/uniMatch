@@ -39,6 +39,25 @@ function otpEmailHtml({ intro, otp, ttlMinutes = 2 }) {
     <p>This code expires in ${ttlMinutes} minute${ttlMinutes === 1 ? '' : 's'}.</p>`);
 }
 
+/// Told to the graduate, not just recorded against them: the reason they were
+/// suspended, and what signing in will involve from now on. Being locked out
+/// with no explanation is the version of this that generates support requests.
+function suspensionEmailHtml({ suspended, reason }) {
+  if (!suspended) {
+    return emailTemplate(`
+      <p>Your UniMatch account is active again.</p>
+      <p>You can sign in as normal — no verification code is needed.</p>`);
+  }
+  return emailTemplate(`
+    <p>Your UniMatch account has been <strong>suspended</strong>.</p>
+    ${reason ? `<p style="margin:20px 0; padding:12px 16px; background:#fdf3ec; border-left:3px solid #c25a1f; border-radius:4px;">
+      <strong>Reason:</strong> ${reason}</p>` : ''}
+    <p>You can still sign in with your usual email and password, but you will be asked to
+       verify your email first: we send a 6-digit code to this address each time, and you
+       enter it on the <strong>Verify your email</strong> screen.</p>
+    <p style="color:#6b6960; font-size:13px;">Contact the UniMatch administrator if you think this is a mistake.</p>`);
+}
+
 async function sendMail({ to, subject, text, html }) {
   if (!configured()) {
     console.log(`[mailer] BREVO_API_KEY/GMAIL_USER not set -- logging instead of sending.\n  To: ${to}\n  Subject: ${subject}\n  Body: ${text}${html ? '\n  (HTML body also set — not shown in this log)' : ''}`);
@@ -66,4 +85,4 @@ async function sendMail({ to, subject, text, html }) {
   return { sent: true };
 }
 
-module.exports = { sendMail, emailTemplate, otpEmailHtml };
+module.exports = { sendMail, emailTemplate, otpEmailHtml, suspensionEmailHtml };

@@ -424,6 +424,18 @@ class Api {
   static Future<void> removeShortlist(String universityId) =>
       _delete('/shortlist/$universityId');
 
+  /// Completes a suspended graduate's sign-in. /login checked the password and
+  /// mailed the code; this exchanges the code for a token.
+  static Future<Map<String, dynamic>> verifySuspendedLogin(String email, String otp) async {
+    final res = Map<String, dynamic>.from(
+        await _post('/verify-suspended-login', {'email': email, 'otp': otp}));
+    token = res['token'] as String?;
+    return res;
+  }
+
+  static Future<void> resendLoginOtp(String email) =>
+      _post('/resend-login-otp', {'email': email});
+
   static Future<void> rate(String universityId, int stars) =>
       _post('/rate', {'universityId': universityId, 'stars': stars});
 
@@ -504,6 +516,9 @@ class Api {
   // convention as every other Api call.
   static Future<Map<String, dynamic>> adminNotApplied() async =>
       Map<String, dynamic>.from(await _get('/admin/report/not-applied'));
+
+  static Future<Map<String, dynamic>> adminNeverRanked() async =>
+      Map<String, dynamic>.from(await _get('/admin/report/never-ranked'));
 
   static Future<Uint8List> downloadNotAppliedXlsx() =>
       _downloadXlsx('/admin/report/not-applied.xlsx');
@@ -6807,6 +6822,7 @@ const Set<String> _coveredCriteriaCodes = {
 };
 
 class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAware {
+  bool _saving = false;
   Map<String, dynamic> d = {};
   List<Map<String, dynamic>> otherCriteria = [];
   bool loading = true;
@@ -7237,6 +7253,8 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
       );
 
   Future<void> _save() async {
+    if (_saving) return; // a second tap while the first is in flight
+    setState(() => _saving = true);
     try {
       _deriveNumericCriteria();
       final missing = _validate();
@@ -7254,6 +7272,8 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
           context, MaterialPageRoute(builder: (_) => const StaffDashboard()), (r) => false);
     } catch (e) {
       if (mounted) toast(context, e.toString());
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -7268,11 +7288,16 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
     return Scaffold(
       drawer: staffDrawer(context),
       appBar: staffAppBar(context, 'Criteria answers', back: true),
-      floatingActionButton: (loading || _blocked) ? null : FloatingActionButton.extended(
-        onPressed: _save, backgroundColor: C.green,
-        icon: const Icon(Icons.save, color: Colors.white),
-        label: const Text('Save', style: TextStyle(color: Colors.white)),
-      ),
+      // Save is a full-width bar pinned to the bottom, not a floating button.
+      // A FAB is lifted above the keyboard and slides back down as the keyboard
+      // dismisses, so a tap aimed at where it appears can miss it and land on
+      // blank space -- which does nothing except close the keyboard. The second
+      // tap then lands, which is exactly what "having to press Save several
+      // times" looked like. A full-width target in a fixed bar cannot be
+      // near-missed, and it matches every other form in the app.
+      bottomNavigationBar: (loading || _blocked) ? null : formFooter([
+        primaryButton('Save answers', _save, loading: _saving),
+      ]),
       body: loading
           ? const Center(child: CircularProgressIndicator(color: C.green))
           : _blocked
@@ -7303,7 +7328,7 @@ class _StaffCriteriaScreenState extends State<StaffCriteriaScreen> with RouteAwa
                   ),
                 )
               : ListView(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 90),
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
               children: [
                 const Text('These answers are what A2 graduates see on your university detail page, and what TOPSIS ranks on. Numeric fields feed the score.',
                     style: TextStyle(color: C.muted, fontSize: 12)),
@@ -9531,6 +9556,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   String reportType = 'Applications by university';
   String reportUni = 'All universities';
   Map<String, dynamic>? notApplied;
+  Map<String, dynamic>? neverRanked;
   DateTime from = DateTime(2026, 1, 1);
   DateTime to = DateTime(2026, 7, 16);
 
@@ -9539,6 +9565,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     'Shortlist / interest trends',
     'A2 applicants list',
     'Not yet applied',
+    'Never generated a ranking',
     'Most-chosen criteria',
   ];
 
@@ -9547,6 +9574,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     'Shortlist / interest trends': 'How often each university was shortlisted by students.',
     'A2 applicants list': 'Every A2 graduate who applied, their university and home area.',
     'Not yet applied': 'Registered A2 graduates who have not applied anywhere yet.',
+    'Never generated a ranking': 'Graduates who created an account but never ranked any universities.',
     'Most-chosen criteria': 'Which criteria students weighed most when ranking.',
   };
 
@@ -9560,6 +9588,9 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     // someone exported days ago.
     Api.adminNotApplied().then((v) {
       if (mounted) setState(() => notApplied = v);
+    }).catchError((_) {});
+    Api.adminNeverRanked().then((v) {
+      if (mounted) setState(() => neverRanked = v);
     }).catchError((_) {});
   }
 
@@ -9685,6 +9716,11 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                     _downloadApplicantsXlsx();
                   } else if (reportType == 'Not yet applied') {
                     _downloadNotAppliedXlsx();
+                  } else if (reportType == 'Never generated a ranking') {
+                    _downloadCsv('never-generated-a-ranking',
+                        ['Name', 'Email', 'Combination', 'Home area'],
+                        List<Map>.from((neverRanked?['students'] as List?) ?? const [])
+                            .map((g) => [g['name'], g['email'], g['track'], g['home']]).toList());
                   } else if (reportType == 'Most-chosen criteria') {
                     _downloadCsv(reportType, ['Criterion', 'Code', 'selections'],
                         rows.map((u) => [u['name'], u['abbr'], u['n']]).toList());
@@ -9707,7 +9743,36 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
               const SizedBox(height: 20),
               Text(reportType, style: head(17, weight: FontWeight.w500)),
               const SizedBox(height: 10),
-              if (reportType == 'Not yet applied') ...[
+              if (reportType == 'Never generated a ranking') ...[
+                if (neverRanked == null)
+                  const Padding(padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator(color: C.green)))
+                else ...[
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text(
+                        '${neverRanked!['total']} graduates have an account but have never ranked '
+                        'any universities.',
+                        style: const TextStyle(color: C.muted, fontSize: 11.5, height: 1.35)),
+                  ),
+                  ...List<Map>.from((neverRanked!['students'] as List?) ?? const []).map((g) => Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(13),
+                        decoration: BoxDecoration(color: Colors.white,
+                            borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(_titleCase('${g['name'] ?? ''}'),
+                              style: const TextStyle(fontWeight: FontWeight.w600, color: C.ink)),
+                          Text('${g['email'] ?? ''}',
+                              style: const TextStyle(color: C.muted, fontSize: 11)),
+                          if (g['track'] != null && '${g['track']}'.isNotEmpty)
+                            Text('Combination ${g['track']}',
+                                style: const TextStyle(color: C.muted, fontSize: 11)),
+                        ]),
+                      )),
+                ],
+              ]
+              else if (reportType == 'Not yet applied') ...[
                 if (notApplied == null)
                   const Padding(padding: EdgeInsets.all(16),
                       child: Center(child: CircularProgressIndicator(color: C.green)))
@@ -9827,6 +9892,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   String _downloadLabel(String type, String rowUnit) {
     if (type == 'A2 applicants list') return 'Download  applicants  (XLSX)';
     if (type == 'Not yet applied') return 'Download  graduates  (XLSX)';
+    if (type == 'Never generated a ranking') return 'Download  graduates  (CSV)';
     return 'Download  $rowUnit  (CSV)';
   }
 

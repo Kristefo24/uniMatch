@@ -161,9 +161,22 @@ app.post('/login', wrap(async (req, res) => {
   const { email, password } = req.body || {};
   const user = await db.findUserByEmail(email || '');
   if (!user || !(await bcrypt.compare(password || '', user.password))) throw new Error('Wrong email or password');
-  // A suspended student is let in (not blocked at the door) -- the client
-  // locks their home screen and shows the admin's comment instead. Staff's
-  // separate "confirmed" gate below is a different mechanism, untouched.
+  // A suspended graduate still gets in -- the client locks their home screen
+  // and shows the admin's comment -- but only after proving the address is
+  // still theirs. The password alone is no longer enough, because suspension
+  // usually means something about the account is in question. No token is
+  // issued here; /verify-suspended-login hands one over once the emailed code
+  // comes back. Staff's separate "confirmed" gate below is untouched.
+  if (user.role === 'student' && user.suspended) {
+    const otp = genOtp();
+    await db.setResetOtp(user.id, otp, new Date(Date.now() + OTP_TTL_MS).toISOString());
+    mailer.sendMail({ to: user.email, subject: 'Your UniMatch sign-in code',
+      text: `Your UniMatch sign-in code is ${otp}. It expires in 2 minutes.`,
+      html: mailer.otpEmailHtml({
+        intro: 'Your account is suspended, so signing in needs a code. Use the one below:', otp }) })
+      .catch(e => console.error('[mailer] suspended login OTP send failed:', e.message));
+    return res.json({ needsVerification: true, suspended: true, email: user.email });
+  }
 
   if (user.role === 'staff') {
     const reqs = await db.listStaffRequests();
@@ -176,6 +189,52 @@ app.post('/login', wrap(async (req, res) => {
     homeLng: user.homeLng ?? user.home_lng ?? null,
     suspended: !!user.suspended,
     suspendReason: user.suspendReason ?? user.suspend_reason ?? null } });
+}));
+
+// Completes a suspended graduate's sign-in. The password was already checked
+// by /login -- which is the only thing that issues this code -- so the code
+// coming back is what proves they still hold the address.
+app.post('/verify-suspended-login', wrap(async (req, res) => {
+  const { otp } = req.body || {};
+  const email = v.email((req.body || {}).email);
+  if (!otp) throw new Error('Email and code are required');
+  const user = await db.findUserByEmail(email);
+  const rec = user ? await db.getResetOtp(email) : null;
+  // Same message either way, so this can't be used to find out which
+  // addresses have an account or which are suspended.
+  if (!user || !rec) throw new Error('Invalid or expired code');
+  await checkOtp({
+    stored: rec.otp, expiresAt: rec.expiresAt, attempts: rec.attempts, supplied: otp,
+    bump: () => db.bumpResetOtpAttempts(rec.userId),
+    burn: () => db.clearResetOtp(rec.userId),
+  });
+  await db.clearResetOtp(rec.userId);
+  res.json({ token: sign(user), user: {
+    id: user.id, name: user.name, email: user.email, role: user.role,
+    universityId: user.universityId || null, track: user.track || null, photo: user.photo || null,
+    homeArea: user.homeArea ?? user.home_area ?? null,
+    homeLat: user.homeLat ?? user.home_lat ?? null,
+    homeLng: user.homeLng ?? user.home_lng ?? null,
+    suspended: !!user.suspended,
+    suspendReason: user.suspendReason ?? user.suspend_reason ?? null } });
+}));
+
+// Re-issues the sign-in code. Only ever sends to a suspended graduate's own
+// stored address, so it cannot be used to mail anyone else.
+app.post('/resend-login-otp', wrap(async (req, res) => {
+  const email = v.email((req.body || {}).email);
+  const user = await db.findUserByEmail(email);
+  if (user && user.role === 'student' && user.suspended) {
+    const otp = genOtp();
+    await db.setResetOtp(user.id, otp, new Date(Date.now() + OTP_TTL_MS).toISOString());
+    mailer.sendMail({ to: user.email, subject: 'Your UniMatch sign-in code',
+      text: `Your UniMatch sign-in code is ${otp}. It expires in 2 minutes.`,
+      html: mailer.otpEmailHtml({
+        intro: 'Your account is suspended, so signing in needs a code. Use the one below:', otp }) })
+      .catch(e => console.error('[mailer] suspended login OTP resend failed:', e.message));
+  }
+  // Always the same answer -- see /verify-suspended-login.
+  res.json({ ok: true });
 }));
 
 app.put('/me', auth(), wrap(async (req, res) => {
@@ -742,6 +801,16 @@ app.get('/admin/report/not-applied', auth(), requireRole('admin'), wrap(async (_
   });
 }));
 
+// Registered graduates who have never generated a ranking at all.
+app.get('/admin/report/never-ranked', auth(), requireRole('admin'), wrap(async (_req, res) => {
+  const students = await db.neverRankedStudents();
+  res.json({
+    students,
+    total: students.length,
+    applied: students.filter(s => s.applied).length,
+  });
+}));
+
 app.get('/admin/report/not-applied.xlsx', auth(), requireRole('admin'), wrap(async (_req, res) => {
   const students = await db.notAppliedStudents();
   const warm = students.filter(s => s.hasRanking).length;
@@ -903,7 +972,32 @@ app.post('/admin/students/:id/suspended', auth(), requireRole('admin'), wrap(asy
   if (suspended && !(req.body && req.body.reason && req.body.reason.trim())) {
     const e = new Error('A reason is required to suspend an account.'); e.status = 400; throw e;
   }
-  res.json(await db.setStudentSuspended(req.params.id, suspended, req.body && req.body.reason));
+  const result = await db.setStudentSuspended(req.params.id, suspended, req.body && req.body.reason);
+  // Being locked out with no explanation is the worst version of this, so the
+  // graduate is told what happened, why, and what signing in will now involve.
+  const student = result;
+  if (student && student.email) {
+    const reason = (req.body && req.body.reason || '').trim();
+    mailer.sendMail({
+      to: student.email,
+      subject: suspended ? 'Your UniMatch account has been suspended' : 'Your UniMatch account is active again',
+      text: suspended
+        ? [
+            'Your UniMatch account has been suspended.',
+            '',
+            `Reason: ${reason}`,
+            '',
+            'You can still sign in with your usual email and password, but you will be asked to',
+            'verify your email first: we send a 6-digit code to this address each time, and you',
+            'enter it on the "Verify your email" screen.',
+            '',
+            'Contact the UniMatch administrator if you think this is a mistake.',
+          ].join('\n')
+        : 'Your UniMatch account is active again. You can sign in as normal — no verification code is needed.',
+      html: mailer.suspensionEmailHtml({ suspended, reason }),
+    }).catch(e => console.error('[mailer] suspension notice failed:', e.message));
+  }
+  res.json(result);
 }));
 app.delete('/admin/students/:id', auth(), requireRole('admin'), wrap(async (req, res) => {
   res.json(await db.deleteStudent(req.params.id));

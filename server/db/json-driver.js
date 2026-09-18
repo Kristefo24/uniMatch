@@ -565,6 +565,23 @@ module.exports = {
     if (!row) return null;
     return { ranked: row.ranked || [], criteria: row.criteria || [], updatedAt: row.updatedAt };
   },
+  // Graduates who registered and then never generated a single ranking -- they
+  // have an account but have not used the system at all, which is a different
+  // problem from someone who ranked and did not apply. A snapshot with an
+  // empty list counts as never ranked: it means no universities survived their
+  // filters, not that they engaged.
+  async neverRankedStudents() {
+    const applied = new Set((db.applications || []).map(a => a.userId).filter(Boolean));
+    return (db.users || [])
+      .filter(u => u.role === 'student')
+      .filter(u => !(((db.userLastRanking || {})[u.id] || {}).ranked || []).length)
+      .map(u => ({
+        name: u.name || '', email: u.email || '', track: u.track || '',
+        home: u.homeArea || u.home || '', applied: applied.has(u.id),
+      }))
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  },
+
   // A2 graduates who have registered but never applied anywhere -- the list an
   // admin needs to chase. Split by whether they got as far as generating a
   // ranking: someone who saw their matches and stopped is a different problem
@@ -853,14 +870,18 @@ module.exports = {
       .map(u => ({ id: u.id, name: u.name, email: u.email, home: u.home || '', suspended: !!u.suspended }));
   },
   async setStudentSuspended(id, suspended, reason) {
+    // Returns the student's address as well, so the caller can tell them what
+    // happened without a second lookup -- being suspended with no explanation
+    // is the version of this that generates support requests.
     const u = db.users.find(x => x.id === id);
-    if (!u) throw new Error('Student not found');
-    u.suspended = !!suspended;
-    // Restoring always clears the reason -- it only ever describes the
-    // CURRENT suspension, never a stale one from a previous incident.
-    u.suspendReason = u.suspended ? (reason || null) : null;
-    save();
-    return { id: u.id, suspended: u.suspended };
+    if (u) {
+      u.suspended = !!suspended;
+      // Restoring always clears the reason -- it only ever describes the
+      // CURRENT suspension, never a stale one from a previous incident.
+      u.suspendReason = suspended ? (reason || null) : null;
+      save();
+    }
+    return { id, suspended: !!suspended, email: u && u.email, name: u && u.name };
   },
   async deleteStudent(id) {
     db.users = db.users.filter(u => !(u.id === id && u.role === 'student')); save();
