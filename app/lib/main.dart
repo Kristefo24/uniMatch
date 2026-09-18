@@ -1435,20 +1435,15 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => loading = true);
     try {
       final res = await Api.login(email.text.trim(), pass.text);
-      final user = res['user'] as Map;
-      Session.name = user['name'] ?? '';
-      Session.email = user['email'] ?? '';
-      Session.role = user['role'] ?? 'student';
-      Session.uniId = user['universityId'];
-      Session.track = user['track'];
-      Session.photo = user['photo'];
-      Session.homeArea = user['homeArea'] ?? '';
-      Session.homeLat = (user['homeLat'] as num?)?.toDouble();
-      Session.homeLng = (user['homeLng'] as num?)?.toDouble();
-      Session.suspended = user['suspended'] == true;
-      Session.suspendReason = user['suspendReason'];
-      _bumpAvatar();
       if (!mounted) return;
+      // A suspended graduate's password was accepted but no token was issued:
+      // they finish signing in by entering the code just mailed to them.
+      if (res['needsVerification'] == true) {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => VerifyScreen(
+            email: '${res['email'] ?? email.text.trim()}', suspendedLogin: true)));
+        return;
+      }
+      applySessionUser(res['user'] as Map);
       _routeByRole(context, Session.role);
     } catch (e) {
       if (mounted) toast(context, e.toString());
@@ -1501,6 +1496,23 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
     );
   }
+}
+
+/// Populates Session from a /login or /verify-suspended-login user object.
+/// Shared so the two ways into a session can never drift apart.
+void applySessionUser(Map user) {
+  Session.name = user['name'] ?? '';
+  Session.email = user['email'] ?? '';
+  Session.role = user['role'] ?? 'student';
+  Session.uniId = user['universityId'];
+  Session.track = user['track'];
+  Session.photo = user['photo'];
+  Session.homeArea = user['homeArea'] ?? '';
+  Session.homeLat = (user['homeLat'] as num?)?.toDouble();
+  Session.homeLng = (user['homeLng'] as num?)?.toDouble();
+  Session.suspended = user['suspended'] == true;
+  Session.suspendReason = user['suspendReason'];
+  _bumpAvatar();
 }
 
 void _routeByRole(BuildContext context, String role) {
@@ -1990,7 +2002,11 @@ class _SignupScreenState extends State<SignupScreen> {
 class VerifyScreen extends StatefulWidget {
   final String email;
   final Map<String, dynamic>? user;
-  const VerifyScreen({super.key, required this.email, this.user});
+  /// True when the code is completing a suspended graduate's sign-in rather
+  /// than a new signup: the password was already accepted, and verifying hands
+  /// back a token instead of sending them to the login screen.
+  final bool suspendedLogin;
+  const VerifyScreen({super.key, required this.email, this.user, this.suspendedLogin = false});
   @override
   State<VerifyScreen> createState() => _VerifyScreenState();
 }
@@ -2036,6 +2052,13 @@ class _VerifyScreenState extends State<VerifyScreen> {
     if (code.text.trim().isEmpty) { toast(context, 'Enter the code'); return; }
     setState(() => verifying = true);
     try {
+      if (widget.suspendedLogin) {
+        final res = await Api.verifySuspendedLogin(widget.email, code.text.trim());
+        if (!mounted) return;
+        applySessionUser(res['user'] as Map);
+        _routeByRole(context, Session.role);
+        return;
+      }
       await Api.verifySignup(widget.email, code.text.trim());
       if (!mounted) return;
       toast(context, 'Email verified — you can log in now.');
@@ -2053,7 +2076,11 @@ class _VerifyScreenState extends State<VerifyScreen> {
   Future<void> _resend() async {
     setState(() => resending = true);
     try {
-      await Api.resendSignupOtp(widget.email);
+      if (widget.suspendedLogin) {
+        await Api.resendLoginOtp(widget.email);
+      } else {
+        await Api.resendSignupOtp(widget.email);
+      }
       if (!mounted) return;
       setState(_startTimer);
       toast(context, 'A new code was sent to ${widget.email}');
@@ -2080,8 +2107,12 @@ class _VerifyScreenState extends State<VerifyScreen> {
             children: [
               Text('Verify your email', style: head(28)),
               const SizedBox(height: 8),
-              Text('We sent a 6-digit code to ${widget.email}.',
-                  style: const TextStyle(color: C.muted, fontSize: 14)),
+              Text(
+                  widget.suspendedLogin
+                      ? 'Your account is suspended, so signing in needs a code. '
+                        'We sent a 6-digit code to ${widget.email}.'
+                      : 'We sent a 6-digit code to ${widget.email}.',
+                  style: const TextStyle(color: C.muted, fontSize: 14, height: 1.4)),
               const SizedBox(height: 28),
               TextField(
                 controller: code,
