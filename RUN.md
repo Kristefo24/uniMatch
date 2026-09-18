@@ -1,8 +1,33 @@
-# UniMatch Gasabo — Run it in Android Studio
+# UniMatch Gasabo — running it
 
 ## Presenting on a PC (no Android Studio)
 
-Double-click **`present/present.bat`**.
+### The Windows app — what to use
+
+Build it once:
+
+```
+cd app
+flutter build windows --release
+```
+
+Everything you need is then in `app/build/windows/x64/runner/Release`.
+Double-click **`UniMatch.exe`**.
+
+Copy that whole folder to any Windows PC and it runs there too — nothing to
+install. Keep the folder together though: the executable needs the DLLs and the
+`data` folder beside it.
+
+The window opens at phone size. **Maximise it for a projector** — the app stays
+a centred phone-width column instead of stretching.
+
+First build on a fresh machine needs **Developer Mode** turned on
+(`start ms-settings:developers`); Flutter needs symlink support to build with
+plugins. Nothing special is needed to *run* it.
+
+### The browser fallback
+
+If the executable is unavailable, double-click **`present/present.bat`**.
 
 It serves the local web build and opens it full screen inside a phone frame —
 no tabs, no address bar, no DevTools, no emulator. Press **Alt+F4** to finish;

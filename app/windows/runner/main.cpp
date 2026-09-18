@@ -31,7 +31,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // wider than that (see main.dart), so maximising for a projector still looks
   // right -- this is only the shape it starts in.
   Win32Window::Point origin(60, 20);
-  Win32Window::Size size(520, 940);
+  Win32Window::Size size(460, 940);
   if (!window.Create(L"UniMatch", origin, size)) {
     return EXIT_FAILURE;
   }
