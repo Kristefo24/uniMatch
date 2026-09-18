@@ -22,9 +22,11 @@ const Map<String, String> kApplyUrls = {
   // dropped -- every graduate would otherwise be sent the same expired token.
   'uni-uok': 'https://apply.uok.ac.rw/',
   'uni-eau': 'https://mis.eaur.ac.rw/apply.php?bc',
-  'uni-alu': 'https://www.alueducation.com/apply/',
-  'uni-auca': 'https://auca.ac.rw/apply/',
-  'uni-kepler': 'https://www.kepler.org/apply/',
+  'uni-alu': 'https://www.alueducation.com/apply-now/',
+  // auca.ac.rw/online-application/ currently returns HTTP 500; this is the
+  // applicant portal it was meant to reach, and it answers.
+  'uni-auca': 'https://web.auca.ac.rw/auth/sign-in?returnUrl=%2Fdashboard',
+  'uni-kepler': 'https://kepler.org/apply/',
   'uni-ulk': 'https://ulk.schoolgear.co.rw/online_application/application/5c139774-f615-4ffa-b4b9-41f9dd4293de',
 };
 
