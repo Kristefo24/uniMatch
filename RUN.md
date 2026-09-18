@@ -1,5 +1,29 @@
 # UniMatch Gasabo — Run it in Android Studio
 
+## Presenting on a PC (no Android Studio)
+
+Double-click **`present/present.bat`**.
+
+It serves the local web build and opens it full screen inside a phone frame —
+no tabs, no address bar, no DevTools, no emulator. Press **Alt+F4** to finish;
+the server shuts down with the browser.
+
+If it says the build is missing, make it once:
+
+```
+cd app
+flutter build web --release
+```
+
+Two things worth knowing before you stand up:
+
+- **The app still needs internet** for its data — logins, rankings and reports
+  all call the hosted API. Only the interface is served locally. If the venue's
+  wifi is doubtful, record the flow beforehand as a backup.
+- It is a browser window underneath. Nothing on screen says so, but anyone who
+  looks closely will see Chromium rather than Android. To demo the genuine
+  Android app instead, mirror a phone over USB.
+
 ## 1. Start the backend (Terminal 1)
 
 ```

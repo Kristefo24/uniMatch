@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<!--
+  Presenter frame for UniMatch.
+
+  Runs the real web build inside a phone-shaped bezel, centred and scaled up so
+  it reads from the back of a room. The app is laid out mobile-first with no
+  max-width, so a full-screen browser stretches every screen; Chrome's device
+  toolbar fixes that but puts DevTools on the projector. This does neither.
+
+  Launch it with present.bat, which serves the build and opens this page in a
+  kiosk window. The iframe must be same-origin with the build -- a file:// page
+  cannot frame it -- which is why the launcher copies this file INTO
+  app/build/web rather than pointing at it where it lives.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UniMatch</title>
+<style>
+  :root {
+    --phone-w: 390px;
+    --phone-h: 844px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #14201b;
+    /* A faint vignette so the phone reads as lit rather than pasted on. */
+    background-image: radial-gradient(ellipse at 50% 42%, #1e2f27 0%, #0f1814 70%);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* Scaled as a whole, so the bezel, its shadow and the app all grow together
+     and the proportions stay honest. */
+  #phone {
+    width: var(--phone-w);
+    height: var(--phone-h);
+    transform-origin: center center;
+    border-radius: 44px;
+    padding: 12px;
+    background: #050907;
+    box-shadow:
+      0 0 0 2px #2b3b34,
+      0 40px 90px rgba(0, 0, 0, 0.55),
+      0 8px 24px rgba(0, 0, 0, 0.4);
+    position: relative;
+  }
+  /* The speaker slot -- enough to read as a phone without pretending to be a
+     specific manufacturer's handset. */
+  #phone::before {
+    content: "";
+    position: absolute;
+    top: 22px; left: 50%;
+    transform: translateX(-50%);
+    width: 96px; height: 5px;
+    border-radius: 3px;
+    background: #1b2621;
+    z-index: 2;
+  }
+  iframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 33px;
+    background: #fbf8f3;
+    display: block;
+  }
+  /* Shown only if the build is missing, which otherwise looks like a hang. */
+  #hint {
+    position: fixed;
+    left: 0; right: 0; bottom: 18px;
+    text-align: center;
+    color: #5f7a6d;
+    font-size: 12px;
+    letter-spacing: 0.3px;
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="phone"><iframe id="app" src="index.html" title="UniMatch"></iframe></div>
+  </div>
+  <div id="hint">Alt+F4 to exit</div>
+
+<script>
+  // Fill the height available, leaving a margin so the shadow isn't clipped.
+  // Width is checked too, so a short wide projector doesn't push the phone off
+  // the sides. Never scales below 1: on a small laptop the phone stays
+  // life-sized rather than shrinking into illegibility.
+  var phone = document.getElementById('app').parentElement;
+  function fit() {
+    var byHeight = (window.innerHeight * 0.88) / 844;
+    var byWidth  = (window.innerWidth  * 0.92) / 390;
+    var scale = Math.min(byHeight, byWidth);
+    phone.style.transform = 'scale(' + (scale < 1 ? scale : scale) + ')';
+  }
+  fit();
+  window.addEventListener('resize', fit);
+
+  // The hint is for the presenter, not the audience -- fade it once they've had
+  // a chance to read it.
+  setTimeout(function () {
+    var h = document.getElementById('hint');
+    h.style.transition = 'opacity 1s';
+    h.style.opacity = '0';
+  }, 6000);
+</script>
+</body>
+</html>
