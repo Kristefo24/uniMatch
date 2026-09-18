@@ -8,7 +8,10 @@ rem Needs no Android Studio, no emulator and no Netlify.
 
 set "ROOT=%~dp0.."
 set "WEB=%ROOT%\app\build\web"
-set "PORT=8000"
+rem Deliberately not 8000/8080/5000: those are the ports something else on a dev
+rem machine is most likely already holding, and a clash would leave the frame
+rem showing someone else's page.
+set "PORT=8747"
 
 if not exist "%WEB%\index.html" (
   echo.
@@ -42,6 +45,11 @@ if not defined BROWSER (
   echo       http://localhost:%PORT%/present.html
 )
 
+rem Clear anything left holding the port from a previous run that was closed
+rem the hard way -- otherwise python exits immediately and the frame loads a
+rem blank page with no hint as to why.
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT%" ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
+
 rem Serve only the build folder, never the repo root -- that keeps server\.env
 rem off the HTTP server even on localhost.
 echo   Serving %WEB% on port %PORT% ...
@@ -58,8 +66,13 @@ if defined BROWSER (
     --user-data-dir="%TEMP%\unimatch-present" --no-first-run --no-default-browser-check
 )
 
-rem Control returns here when the browser window closes, so the server stops
-rem with it rather than being left running on port %PORT%.
+rem Control returns here when the browser window closes -- the separate
+rem --user-data-dir is what guarantees that, since Chrome would otherwise hand
+rem off to an already-running instance and return immediately.
+rem
+rem Kill by whoever holds the port, not by window title: once cmd starts python
+rem the title is no longer reliably ours, and a missed kill leaves the port held
+rem so the NEXT run silently serves nothing.
 echo   Closing the server ...
-taskkill /f /fi "WINDOWTITLE eq UniMatch server*" >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT%" ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
 endlocal
